@@ -60,16 +60,27 @@ def main() -> int:
            if args.end else datetime.now(timezone.utc).date())
 
     total_rows = 0
+    failed: list[str] = []
     chunks = list(_months(start, end))
     print(f"Backfilling {start} -> {end} in {len(chunks)} monthly chunks...", flush=True)
     for cs, ce in chunks:
-        s = backfill(start_date=cs.isoformat(), end_date=ce.isoformat())
-        total_rows += s["n_records"]
-        print(f"  {cs} .. {ce}: {s['n_records']:>8,} rows -> "
-              f"{Path(s['path']).name if s['path'] else '(empty)'}", flush=True)
+        # One chunk failing (e.g. a slow API request exhausting retries) must not
+        # abandon the whole multi-month backfill — log it and carry on.
+        try:
+            s = backfill(start_date=cs.isoformat(), end_date=ce.isoformat())
+            total_rows += s["n_records"]
+            print(f"  {cs} .. {ce}: {s['n_records']:>8,} rows -> "
+                  f"{Path(s['path']).name if s['path'] else '(empty)'}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - resilience over strictness here
+            failed.append(f"{cs}..{ce}")
+            print(f"  {cs} .. {ce}: FAILED ({type(exc).__name__}: {exc})", flush=True)
 
-    print(json.dumps({"start": str(start), "end": str(end),
-                      "chunks": len(chunks), "total_rows": total_rows}, indent=2))
+    print(json.dumps({"start": str(start), "end": str(end), "chunks": len(chunks),
+                      "total_rows": total_rows, "failed_chunks": failed}, indent=2))
+    if failed:
+        print(f"WARNING: {len(failed)} chunk(s) failed; re-run those date ranges "
+              f"to fill the gaps: {failed}", file=sys.stderr)
+    # Succeed if we got any data — committed chunks are kept; gaps can be re-run.
     return 0 if total_rows else 1
 
 

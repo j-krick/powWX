@@ -16,11 +16,17 @@ is the basis for backfilled verification.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 import requests
 
-REQUEST_TIMEOUT = 60
+# Previous Runs queries (many offsets over a month) can be slow, so the timeout
+# is generous and transient failures are retried with backoff.
+REQUEST_TIMEOUT = 180
+MAX_RETRIES = 4
+BACKOFF_BASE = 3  # seconds: 3, 6, 12, 24
+RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
 def fetch_forecast(
@@ -33,10 +39,14 @@ def fetch_forecast(
     forecast_days: int | None = 16,
     timezone_name: str = "GMT",
     extra_params: dict | None = None,
+    timeout: int = REQUEST_TIMEOUT,
+    max_retries: int = MAX_RETRIES,
 ) -> dict:
-    """GET one multi-model forecast. Returns the raw parsed JSON.
+    """GET one multi-model forecast, with retry/backoff. Returns parsed JSON.
 
     Pass ``forecast_days=None`` to omit it (e.g. when using start_date/end_date).
+    Retries on timeouts, connection errors, and transient HTTP statuses
+    (429/5xx); raises the last error if all attempts fail.
     """
     params = {
         "latitude": latitude,
@@ -49,9 +59,29 @@ def fetch_forecast(
         params["forecast_days"] = forecast_days
     if extra_params:
         params.update(extra_params)
-    resp = requests.get(forecast_url, params=params, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    return resp.json()
+
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.get(forecast_url, params=params, timeout=timeout)
+            if resp.status_code in RETRY_STATUS:
+                raise requests.HTTPError(f"transient HTTP {resp.status_code}", response=resp)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt == max_retries:
+                break
+            # Honour Retry-After on 429s if present, else exponential backoff.
+            wait = BACKOFF_BASE * (2 ** attempt)
+            resp = getattr(exc, "response", None)
+            if resp is not None and resp.status_code == 429:
+                try:
+                    wait = max(wait, int(resp.headers.get("Retry-After", 0)))
+                except ValueError:
+                    pass
+            time.sleep(wait)
+    raise last_exc
 
 
 def _split_key(key: str, model_ids: list[str]) -> tuple[str, str] | None:
