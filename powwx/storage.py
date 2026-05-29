@@ -14,7 +14,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
+# NOTE: pandas/pyarrow are imported lazily inside write_forecast_run so that the
+# lightweight webcam grabber (requests + boto3 only) can import the R2 helpers
+# below without pulling in the heavier analysis stack.
 
 FORECAST_COLUMNS = [
     "location",
@@ -41,6 +43,8 @@ def write_forecast_run(
     """
     if not records:
         return None
+    import pandas as pd
+
     df = pd.DataFrame.from_records(records)
     # Stable column order; tolerate any missing optional columns.
     for col in FORECAST_COLUMNS:
