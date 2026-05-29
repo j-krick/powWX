@@ -1,0 +1,59 @@
+name: backfill
+
+# One-off / occasional backfill of verification history from Open-Meteo's
+# Previous Runs API. Manually dispatched with a date range; walks it in monthly
+# chunks and commits the Parquet files back to the repo.
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date (YYYY-MM-DD)"
+        required: true
+        default: "2024-01-01"
+      end_date:
+        description: "End date (YYYY-MM-DD, blank = today)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: forecast-data       # share with forecast-logger to avoid push races
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Run backfill
+        run: |
+          END="${{ inputs.end_date }}"
+          if [ -n "$END" ]; then
+            python scripts/backfill_previous_runs.py --start "${{ inputs.start_date }}" --end "$END"
+          else
+            python scripts/backfill_previous_runs.py --start "${{ inputs.start_date }}"
+          fi
+
+      - name: Commit backfilled data
+        run: |
+          git config user.name  "powwx-bot"
+          git config user.email "actions@github.com"
+          git add data/forecasts
+          if git diff --cached --quiet; then
+            echo "No backfill data to commit."
+          else
+            git commit -m "backfill: ${{ inputs.start_date }} .. ${{ inputs.end_date || 'today' }}"
+            git push
+          fi

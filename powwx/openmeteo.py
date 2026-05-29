@@ -30,19 +30,23 @@ def fetch_forecast(
     models: list[str],
     variables: list[str],
     forecast_url: str,
-    forecast_days: int = 16,
+    forecast_days: int | None = 16,
     timezone_name: str = "GMT",
     extra_params: dict | None = None,
 ) -> dict:
-    """GET one multi-model forecast. Returns the raw parsed JSON."""
+    """GET one multi-model forecast. Returns the raw parsed JSON.
+
+    Pass ``forecast_days=None`` to omit it (e.g. when using start_date/end_date).
+    """
     params = {
         "latitude": latitude,
         "longitude": longitude,
         "hourly": ",".join(variables),
         "models": ",".join(models),
-        "forecast_days": forecast_days,
         "timezone": timezone_name,
     }
+    if forecast_days is not None:
+        params["forecast_days"] = forecast_days
     if extra_params:
         params.update(extra_params)
     resp = requests.get(forecast_url, params=params, timeout=REQUEST_TIMEOUT)

@@ -39,14 +39,21 @@ def _previous_run_variables(variables: list[str], offsets) -> list[str]:
 def backfill(
     *,
     data_dir: Path | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     past_days: int = 7,
     forecast_days: int = 2,
     offsets=DEFAULT_OFFSETS,
 ) -> dict:
     """Pull previous-run history for every location/model into the forecast log.
 
-    ``past_days`` is capped at 92 by the API per request; call repeatedly /
-    schedule periodic top-ups for longer windows.
+    Two modes:
+    - ``start_date``/``end_date`` ("YYYY-MM-DD"): an explicit historical window
+      (the way to walk back to the archive start, ~Jan 2024).
+    - otherwise ``past_days``/``forecast_days`` relative to now (default).
+
+    Writes one Parquet file tagged by the window so repeated chunked calls don't
+    collide. Returns a summary dict.
     """
     locations = cfg.load_locations()
     models_cfg = cfg.load_models()
@@ -54,6 +61,16 @@ def backfill(
     variables = models_cfg["variables"]
     ids = cfg.model_ids(models_cfg)
     data_dir = data_dir or cfg.DATA_DIR
+
+    use_range = start_date is not None and end_date is not None
+    if use_range:
+        extra = {"start_date": start_date, "end_date": end_date}
+        fdays = None
+        tag = f"backfill_{start_date}_{end_date}"
+    else:
+        extra = {"past_days": past_days}
+        fdays = forecast_days
+        tag = "backfill"
 
     fetched_at = om.utcnow()
     request_fields = _previous_run_variables(variables, offsets)
@@ -68,9 +85,9 @@ def backfill(
                 models=[mid],
                 variables=request_fields,
                 forecast_url=api["previous_runs_url"],
-                forecast_days=forecast_days,
+                forecast_days=fdays,
                 timezone_name=api.get("timezone", "GMT"),
-                extra_params={"past_days": past_days},
+                extra_params=extra,
             )
             recs = _parse_previous_runs(
                 raw,
@@ -86,10 +103,11 @@ def backfill(
     from .storage import write_forecast_run
 
     path = write_forecast_run(
-        all_records, data_dir=data_dir, fetched_at=fetched_at, tag="backfill"
+        all_records, data_dir=data_dir, fetched_at=fetched_at, tag=tag
     )
     return {
         "fetched_at": om._iso(fetched_at),
+        "window": f"{start_date}..{end_date}" if use_range else f"past_days={past_days}",
         "n_records": len(all_records),
         "per_series": summary,
         "path": str(path) if path else None,
