@@ -1,0 +1,45 @@
+name: forecast-logger
+
+# Append-only multi-model forecast log. Runs every 6h and commits the new
+# Parquet file(s) back to the repo. Data not recoverable retroactively — keep
+# this green.
+on:
+  schedule:
+    - cron: "0 0,6,12,18 * * *"   # 00/06/12/18 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: forecast-logger
+  cancel-in-progress: false
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Run forecast logger
+        run: python scripts/run_forecast_logger.py
+
+      - name: Commit new forecast data
+        run: |
+          git config user.name  "powwx-bot"
+          git config user.email "actions@github.com"
+          git add data/forecasts
+          if git diff --cached --quiet; then
+            echo "No new forecast data to commit."
+          else
+            git commit -m "forecast log: $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          fi

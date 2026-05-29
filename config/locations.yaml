@@ -1,0 +1,22 @@
+# Observation points (the "actuals") and the coordinates we log forecasts for.
+# Both elevations matter: verification is done per elevation.
+locations:
+  - id: pow_o_meter
+    name: POW-O-METER (top of hill)
+    role: top
+    latitude: 54.49837
+    longitude: -128.96421
+    elevation_m: 1150
+    # Variables this station actually observes (used in Phase 2 verification).
+    # Wind sensor may be added later -> unlocks top-of-hill wind verification.
+    observed: [temperature_2m, snow_depth, relative_humidity_2m]
+    source: google_sheet   # POW-O-METER data hub (published CSV / Sheets API)
+
+  - id: station_58
+    name: DriveBC / Avalanche Canada station #58 (bottom of hill)
+    role: bottom
+    latitude: 54.484970
+    longitude: -128.955860
+    elevation_m: 740
+    observed: [temperature_2m, precipitation, snow_depth, wind_speed_10m, wind_direction_10m]
+    source: avalanche_canada   # queryable weather-station API, station id 58

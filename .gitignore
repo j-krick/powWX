@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Local secrets / env
+.env
+*.local
+
+# Local-only webcam frames (frames live in Cloudflare R2, never in git)
+frames/
+*.png
+*.jpg
+*.jpeg
+*.mp4
+
+# OS
+Thumbs.db
+.DS_Store
+
+# NOTE: data/forecasts/**/*.parquet IS committed (the append-only forecast log).
+!data/forecasts/**/*.parquet

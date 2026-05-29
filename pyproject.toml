@@ -1,0 +1,28 @@
+[project]
+name = "powwx"
+version = "0.1.0"
+description = "Shames backcountry weather logger & forecast-verification tool (powWX)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Julian Krick" }]
+dependencies = [
+    "requests>=2.31",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "pyyaml>=6.0",
+    "python-dateutil>=2.8",
+    "boto3>=1.34",
+]
+
+[project.optional-dependencies]
+# truststore lets local runs use the OS cert store (needed behind corporate TLS
+# proxies). Optional + auto-detected; not used on clean networks like CI.
+dev = ["pytest>=7.0", "truststore>=0.9"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["powwx"]

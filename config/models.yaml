@@ -1,0 +1,61 @@
+# Open-Meteo deterministic models logged for verification.
+#
+# Identifiers VERIFIED resolving on https://api.open-meteo.com/v1/forecast for
+# Shames (54.49837 N, -128.96421 W) on 2026-05-29. Re-verify periodically:
+# Open-Meteo occasionally renames model ids. A quick check is in
+# scripts/verify_models.py.
+
+api:
+  forecast_url: https://api.open-meteo.com/v1/forecast
+  previous_runs_url: https://previous-runs-api.open-meteo.com/v1/forecast
+  timezone: GMT                # always log in UTC
+  forecast_days: 16            # request max horizon; short-range models null out beyond
+                               # their horizon and those nulls are dropped.
+
+# Variables to log (Open-Meteo hourly names). Not every model serves every
+# variable; missing combos come back null and are dropped on parse.
+variables:
+  - temperature_2m
+  - relative_humidity_2m
+  - precipitation
+  - snowfall
+  - snow_depth
+  - wind_speed_10m
+  - wind_gusts_10m
+  - wind_direction_10m
+
+models:
+  - id: gem_hrdps_continental
+    label: GEM HRDPS
+    resolution_km: 2.5
+    horizon_days: 2
+  - id: gem_regional
+    label: GEM RDPS
+    resolution_km: 10
+    horizon_days: 3.5
+  - id: gem_global
+    label: GEM GDPS
+    resolution_km: 15
+    horizon_days: 10
+  - id: ecmwf_ifs025
+    label: ECMWF IFS
+    resolution_km: 9
+    horizon_days: 10
+  - id: ecmwf_aifs025_single
+    label: ECMWF AIFS
+    resolution_km: 28
+    horizon_days: 10
+  - id: gfs_seamless
+    label: GFS (Seamless)
+    resolution_km: 11
+    horizon_days: 16
+  - id: icon_global
+    label: ICON Global
+    resolution_km: 11
+    horizon_days: 7.5
+
+# --- Deferred / not applicable (documented so we don't relitigate) ---
+# GEPS (Canadian ensemble): Ensemble API /v1/ensemble, up to 51 members. Phase 2.
+# HRRR: CONUS-only on Open-Meteo -> does NOT cover Shames (54.5 N). gfs_seamless
+#       runs alone here; no high-res ride-along at our latitude.
+# HRDPS 1 km West: not on Open-Meteo (needs ECCC GRIB2 pipeline). Future, not v1.

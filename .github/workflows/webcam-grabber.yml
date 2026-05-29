@@ -1,0 +1,36 @@
+name: webcam-grabber
+
+# Captures the two Shames webcam frames and uploads them to Cloudflare R2.
+# Frames go to object storage, never git. Runs every 30 min during BC daylight
+# (~06:00-21:00 Pacific == ~13:00-05:00 UTC, split across two cron windows).
+on:
+  schedule:
+    - cron: "*/30 13-23 * * *"   # 13:00-23:30 UTC
+    - cron: "*/30 0-5 * * *"     # 00:00-05:30 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: webcam-grabber
+  cancel-in-progress: true
+
+jobs:
+  grab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install requests boto3
+
+      - name: Grab and upload frames
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: python scripts/run_webcam_grabber.py
