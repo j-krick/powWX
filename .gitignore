@@ -23,3 +23,6 @@ Thumbs.db
 
 # NOTE: data/forecasts/**/*.parquet IS committed (the append-only forecast log).
 !data/forecasts/**/*.parquet
+
+# Viewer data JSON is generated fresh by the viewer workflow on each deploy.
+viewer/data/*.json

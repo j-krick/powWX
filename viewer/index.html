@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>powWX — Shames Mountain Weather</title>
+  <meta name="description" content="Multi-model weather forecasts, observations and webcams for Shames Mountain backcountry, near Terrace BC.">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="app.js" defer></script>
+</head>
+<body class="view-charts">
+  <header>
+    <div class="header-row">
+      <h1>powWX <span class="snow">❄</span></h1>
+      <div class="view-toggle" role="group" aria-label="View mode">
+        <button id="btn-charts" type="button" class="active">Charts</button>
+        <button id="btn-tables" type="button">Tables</button>
+      </div>
+    </div>
+    <p class="tagline">Shames Mountain backcountry — multi-model forecasts, observations &amp; webcams</p>
+    <p id="status" class="status">Loading…</p>
+  </header>
+
+  <main>
+    <section id="forecast" aria-live="polite"></section>
+
+    <section id="webcams">
+      <h2>Webcams</h2>
+      <div id="webcam-cams"></div>
+    </section>
+  </main>
+
+  <footer id="footer"></footer>
+</body>
+</html>
