@@ -31,6 +31,99 @@ async function loadJSON(name) {
   return r.json();
 }
 
+// ---- shared time-axis range (pan/zoom across all charts) -----------------
+const DAY = 86400000;
+const allCharts = [];
+const VIEW = { min: null, max: null }; // current x-window in epoch ms; null = fit data
+let syncing = false;
+
+// Apply an x-range to every chart so panning/zooming one moves them all together.
+// min/max are epoch ms, or null to fit the data extent.
+function applyRange(min, max) {
+  VIEW.min = min; VIEW.max = max;
+  syncing = true;
+  for (const ch of allCharts) {
+    ch.options.scales.x.min = min == null ? undefined : min;
+    ch.options.scales.x.max = max == null ? undefined : max;
+    ch.update("none");
+  }
+  syncing = false;
+  reflectRange();
+}
+
+// Fired by the zoom plugin after a user pan/zoom gesture on one chart.
+function onGestureRange({ chart }) {
+  if (syncing) return;
+  const s = chart.scales.x;
+  applyRange(s.min, s.max);
+}
+
+function toDateInput(ms) {
+  const d = new Date(ms), p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// Update the range label + date inputs to match what's currently shown.
+function reflectRange() {
+  const label = document.getElementById("range-label");
+  if (!label) return;
+  let min = VIEW.min, max = VIEW.max;
+  if ((min == null || max == null) && allCharts.length) {
+    const s = allCharts[0].scales.x; // when fitting data, read the rendered extent
+    if (min == null) min = s.min;
+    if (max == null) max = s.max;
+  }
+  if (min != null && max != null) {
+    const o = { month: "short", day: "numeric", hour: "numeric" };
+    label.textContent = `${fmtLocal(min, o)} → ${fmtLocal(max, o)}`;
+    const from = document.getElementById("range-from");
+    const to = document.getElementById("range-to");
+    if (from) from.value = toDateInput(min);
+    if (to) to.value = toDateInput(max);
+  }
+}
+
+function buildRangeControls() {
+  const root = document.getElementById("range-controls");
+  if (!root) return;
+  root.innerHTML = "";
+  const now = Date.now();
+  const mkBtn = (text, fn) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = text; b.onclick = fn;
+    return b;
+  };
+
+  const presets = document.createElement("div");
+  presets.className = "range-presets";
+  presets.append(
+    mkBtn("Next 3 days", () => applyRange(now - 0.5 * DAY, now + 3 * DAY)),
+    mkBtn("Next 7 days", () => applyRange(now - 0.5 * DAY, now + 7 * DAY)),
+    mkBtn("Last 3 days", () => applyRange(now - 3 * DAY, now + 0.5 * DAY)),
+    mkBtn("All", () => applyRange(null, null)),
+  );
+
+  const custom = document.createElement("div");
+  custom.className = "range-custom";
+  const from = document.createElement("input"); from.type = "date"; from.id = "range-from";
+  const to = document.createElement("input"); to.type = "date"; to.id = "range-to";
+  const apply = mkBtn("Apply", () => {
+    const f = from.value ? new Date(from.value + "T00:00").getTime() : null;
+    const t = to.value ? new Date(to.value + "T23:59").getTime() : null;
+    applyRange(f, t);
+  });
+  custom.append(document.createTextNode("From "), from,
+    document.createTextNode(" to "), to, apply);
+
+  const label = document.createElement("span");
+  label.id = "range-label"; label.className = "range-label";
+  const hint = document.createElement("span");
+  hint.className = "range-hint"; hint.textContent = "scroll to zoom · drag to pan";
+
+  root.append(presets, custom, label, hint);
+  reflectRange();
+}
+
 function fmtLocal(iso, opts) {
   return new Date(iso).toLocaleString(undefined,
     opts || { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -125,6 +218,9 @@ function makeChart(canvas, loc, vcfg, fc, obs) {
       callback: (val) => COMPASS[val] ?? val };
   }
 
+  const dataMin = times.length ? new Date(times[0]).getTime() : undefined;
+  const dataMax = times.length ? new Date(times[times.length - 1]).getTime() : undefined;
+
   const chart = new Chart(canvas, {
     type: "line",
     data: { datasets },
@@ -143,14 +239,26 @@ function makeChart(canvas, loc, vcfg, fc, obs) {
             ? { label: (c) => `${c.dataset.label}: ${Math.round(c.parsed.y)}°` }
             : {},
         },
+        // Scroll/pinch to zoom the time axis, drag to pan; gestures sync to every
+        // chart via onGestureRange. Limits keep pan/zoom within the loaded data.
+        zoom: {
+          pan: { enabled: true, mode: "x", onPanComplete: onGestureRange },
+          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: "x",
+                  onZoomComplete: onGestureRange },
+          limits: { x: { min: dataMin, max: dataMax, minRange: 6 * 3600 * 1000 } },
+        },
       },
       scales: {
-        x: { type: "time", time: { tooltipFormat: "EEE MMM d, HH:mm" },
+        x: { type: "time",
+             min: VIEW.min == null ? undefined : VIEW.min,
+             max: VIEW.max == null ? undefined : VIEW.max,
+             time: { tooltipFormat: "EEE MMM d, HH:mm" },
              ticks: { color: "#9fb0c3", maxRotation: 0, autoSkipPadding: 20 }, grid: { color: "#243246" } },
         y: yScale,
       },
     },
   });
+  allCharts.push(chart);
   return chart;
 }
 
@@ -352,6 +460,7 @@ async function main() {
     buildFooter(meta);
     setStatus(fc, obs, meta);
     wireToggle();
+    buildRangeControls();
   } catch (e) {
     document.getElementById("status").textContent = `Failed to load data: ${e.message}`;
     console.error(e);

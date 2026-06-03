@@ -33,6 +33,23 @@ from powwx import observations as obs  # noqa: E402
 
 FORECAST_DAYS = 7
 PAST_HOURS = 12
+OBS_DAYS = 14  # how much observation history to load (the viewer can pan back over it)
+
+# POW-O-METER (top, 1150 m): published Google-Sheet CSV. Timestamps are naive PST
+# (UTC-8); snow depth is already in metres, temp in degC, humidity in %, so no unit
+# scaling. Transmissions are suspended over summer, so the series ends in late May.
+POW_O_METER_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vSt3wzU7iZgZDIyAEpbCJRxp91mo6"
+    "yzA36v_beMGgBiuqRi9JJf2ySmtE5naWVA_UKKwpWZq0s0oN3y/pub"
+    "?gid=906900269&single=true&output=csv"
+)
+POW_O_METER_TZ_OFFSET_HOURS = -8  # PST
+POW_O_METER_COLUMN_MAP = {
+    "time": "Measurement Time (PST)",
+    "Air Temperature (°C)": ("temperature_2m", 1.0),
+    "Humidity (%)": ("relative_humidity_2m", 1.0),
+    "Snow Depth (m)": ("snow_depth", 1.0),
+}
 UNITS = {
     "temperature_2m": "°C",
     "relative_humidity_2m": "%",
@@ -120,12 +137,24 @@ def build_forecast(models_cfg: dict, locations: list[dict]) -> dict:
 
 def build_observations() -> dict:
     out: dict = {}
+    records: list[dict] = []
+    # Station #58 (bottom, 740 m) — Avalanche Canada API.
     try:
-        records = obs.fetch_station_58(days=FORECAST_DAYS)
-    except Exception as exc:  # noqa: BLE001 - obs panel is best-effort
+        records += obs.fetch_station_58(days=OBS_DAYS)
+    except Exception as exc:  # noqa: BLE001 - obs panels are best-effort
         print(f"WARNING: station #58 fetch failed: {exc}", file=sys.stderr)
-        return out
-    # Collect then sort ascending by time (the API returns newest-first).
+    # POW-O-METER (top, 1150 m) — published Google-Sheet CSV, trimmed to the window.
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=OBS_DAYS)
+        pom = obs.fetch_pow_o_meter(
+            csv_url=POW_O_METER_CSV_URL,
+            column_map=POW_O_METER_COLUMN_MAP,
+            source_utc_offset_hours=POW_O_METER_TZ_OFFSET_HOURS,
+        )
+        records += [r for r in pom if _to_utc(r["time"]) >= cutoff]
+    except Exception as exc:  # noqa: BLE001 - obs panels are best-effort
+        print(f"WARNING: POW-O-METER fetch failed: {exc}", file=sys.stderr)
+    # Collect then sort ascending by time (sources may return newest-first).
     pairs: dict = {}
     for r in records:
         key = (r["location"], r["variable"])

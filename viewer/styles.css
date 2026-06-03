@@ -39,6 +39,15 @@ h1 .snow { color: var(--accent); }
 
 main { padding: 1.25rem; max-width: 1280px; margin: 0 auto; }
 
+.range-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin-bottom: 1.25rem; padding: .6rem .75rem; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; font-size: .82rem; }
+.range-presets { display: flex; gap: .35rem; flex-wrap: wrap; }
+.range-controls button { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: .3rem .6rem; cursor: pointer; font-size: .8rem; }
+.range-controls button:hover { border-color: var(--accent); }
+.range-custom { display: flex; align-items: center; gap: .35rem; color: var(--ink-dim); }
+.range-custom input[type=date] { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: .25rem .4rem; font-size: .8rem; color-scheme: dark; }
+.range-label { color: var(--accent); font-variant-numeric: tabular-nums; }
+.range-hint { color: var(--ink-dim); margin-left: auto; font-size: .78rem; }
+
 .loc-block { margin-bottom: 2rem; }
 .loc-head { display: flex; align-items: baseline; gap: .6rem; border-bottom: 1px solid var(--line); padding-bottom: .35rem; margin-bottom: 1rem; }
 .loc-head h2 { margin: 0; font-size: 1.25rem; }

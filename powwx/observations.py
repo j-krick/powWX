@@ -73,26 +73,41 @@ def fetch_station_58(*, days: int = 7) -> list[dict]:
     return records
 
 
-def fetch_pow_o_meter(*, csv_url: str, column_map: dict) -> list[dict]:
+def fetch_pow_o_meter(
+    *, csv_url: str, column_map: dict, source_utc_offset_hours: float = 0.0
+) -> list[dict]:
     """Phase 1b: parse the POW-O-METER published-CSV into the same long schema.
 
     ``column_map`` maps CSV column names to (powWX variable, multiplier), plus a
-    special ``"time"`` key giving the timestamp column. Not called until the
-    published CSV URL + columns are configured.
+    special ``"time"`` key giving the timestamp column.
+
+    The sheet's timestamps are naive local time; ``source_utc_offset_hours`` is
+    that local zone's offset from UTC (e.g. ``-8`` for PST), used to normalise the
+    ``time`` field to a UTC ISO ``...Z`` string — the same form ``fetch_station_58``
+    returns — so downstream alignment treats both stations identically.
     """
     import csv
     import io
 
     resp = requests.get(csv_url, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
-    reader = csv.DictReader(io.StringIO(resp.text))
+    # Force UTF-8: requests guesses ISO-8859-1 for Google's CSV, which mangles
+    # non-ASCII headers like "Air Temperature (°C)" so they fail to match the map.
+    text = resp.content.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
     time_col = column_map["time"]
+    offset = timedelta(hours=source_utc_offset_hours)
 
     records: list[dict] = []
     for row in reader:
         ts = row.get(time_col)
         if not ts:
             continue
+        try:
+            local = datetime.strptime(ts.strip(), "%Y-%m-%d %H:%M:%S")
+        except (ValueError, AttributeError):
+            continue
+        utc = (local - offset).strftime("%Y-%m-%dT%H:%M:%SZ")
         for col, spec in column_map.items():
             if col == "time":
                 continue
@@ -105,7 +120,7 @@ def fetch_pow_o_meter(*, csv_url: str, column_map: dict) -> list[dict]:
             except ValueError:
                 continue
             records.append(
-                {"location": "pow_o_meter", "time": ts, "variable": variable,
+                {"location": "pow_o_meter", "time": utc, "variable": variable,
                  "value": round(value, 3)}
             )
     return records
