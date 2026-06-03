@@ -23,6 +23,8 @@ variables:
   - wind_speed_10m
   - wind_gusts_10m
   - wind_direction_10m
+  - freezing_level_height   # only GFS + ICON populate this on Open-Meteo; the
+                            # GEM/ECMWF models return null and are dropped on parse.
 
 models:
   - id: gem_hrdps_continental

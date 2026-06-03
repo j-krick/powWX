@@ -42,6 +42,7 @@ UNITS = {
     "wind_speed_10m": "km/h",
     "wind_gusts_10m": "km/h",
     "wind_direction_10m": "°",
+    "freezing_level_height": "m",
 }
 # Cross-check link-outs (we link, never scrape).
 LINKS = [

@@ -7,6 +7,7 @@ go dark off-season; a missing/non-image response is skipped, not an error.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 
 import requests
@@ -24,6 +25,23 @@ def frame_key(camera: str, now: datetime) -> str:
     day = now.strftime("%Y-%m-%d")
     stamp = now.strftime("%H%MZ")
     return f"{camera}/{day}/{stamp}.png"
+
+
+def _newest_etag(r2_client, bucket: str, camera: str) -> str | None:
+    """ETag (md5 hex, unquoted) of the most recently stored frame for ``camera``,
+    or ``None`` if there are none / the listing fails. Used to skip re-storing a
+    byte-identical frame (e.g. a seasonally-off cam whose source never changes)."""
+    try:
+        newest_key, newest_etag = None, None
+        paginator = r2_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=f"{camera}/"):
+            for obj in page.get("Contents", []):
+                # Keys sort chronologically (zero-padded date + HHMM).
+                if newest_key is None or obj["Key"] > newest_key:
+                    newest_key, newest_etag = obj["Key"], obj.get("ETag")
+        return newest_etag.strip('"') if newest_etag else None
+    except Exception:  # noqa: BLE001 - dedup is best-effort; fall back to uploading
+        return None
 
 
 def grab_and_upload(*, r2_client, bucket: str, now: datetime | None = None) -> list[dict]:
@@ -45,6 +63,15 @@ def grab_and_upload(*, r2_client, bucket: str, now: datetime | None = None) -> l
         if resp.status_code != 200 or not content_type.startswith("image/"):
             # Camera off / out of season / transient error — skip gracefully.
             result["reason"] = f"skip status={resp.status_code} type={content_type or 'none'}"
+            results.append(result)
+            continue
+
+        # Skip storing a frame identical to the last one we kept. A seasonally-off
+        # cam serves the same stale image for weeks; without this we'd archive
+        # hundreds of duplicates and clutter the viewer's history slider.
+        new_md5 = hashlib.md5(resp.content).hexdigest()
+        if new_md5 == _newest_etag(r2_client, bucket, camera):
+            result["reason"] = "skip unchanged (identical to latest stored frame)"
             results.append(result)
             continue
 

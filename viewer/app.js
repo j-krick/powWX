@@ -16,14 +16,14 @@ const OBS_COLOR = "#ffffff";
 // table aggregation that makes sense for each.
 const CHART_VARS = [
   { key: "temperature_2m", title: "Temperature", agg: "minmax" },
+  { key: "freezing_level_height", title: "Freezing level", agg: "minmax", refElevation: true },
   { key: "wind_speed_10m", title: "Wind speed", agg: "max" },
+  { key: "wind_direction_10m", title: "Wind direction", agg: "dir", scatter: true, degrees: true },
   { key: "precipitation", title: "Precipitation", agg: "sum" },
   { key: "snowfall", title: "Snowfall", agg: "sum" },
   { key: "snow_depth", title: "Snow depth", agg: "max" },
   { key: "relative_humidity_2m", title: "Humidity", agg: "mean" },
 ];
-
-const charts = [];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}.json`, { cache: "no-store" });
@@ -46,45 +46,112 @@ function aggregate(values, type) {
   if (type === "max") return Math.round(Math.max(...v));
   if (type === "mean") return Math.round(v.reduce((a, b) => a + b, 0) / v.length);
   if (type === "sum") return (v.reduce((a, b) => a + b, 0)).toFixed(1);
+  if (type === "dir") {
+    // Circular (vector) mean — a plain average of degrees wraps wrong at 0/360.
+    const rad = v.map((d) => (d * Math.PI) / 180);
+    const s = rad.reduce((a, r) => a + Math.sin(r), 0);
+    const c = rad.reduce((a, r) => a + Math.cos(r), 0);
+    let deg = Math.round((Math.atan2(s, c) * 180) / Math.PI);
+    if (deg < 0) deg += 360;
+    const pts = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    return `${deg}° ${pts[Math.round(deg / 45) % 8]}`;
+  }
   return "—";
 }
 
 // ---- forecast section ----------------------------------------------------
 
+const COMPASS = { 0: "N", 90: "E", 180: "S", 270: "W", 360: "N" };
+
 function makeChart(canvas, loc, vcfg, fc, obs) {
   const node = fc.forecast[loc][vcfg.key];
+  const scatter = !!vcfg.scatter; // wind direction: points, not a wrapping line
+  const ov = obs[loc] && obs[loc][vcfg.key];
+
+  // Unified time axis: model series (-12h..+7d) and observations (past only) sit
+  // on different grids, so build one sorted set of all timestamps and align every
+  // dataset to it by time. This lets the "index" hover mode line up model vs obs
+  // correctly — both sources report on the exact hour, so slots merge cleanly.
+  const tset = new Set(node.times);
+  if (ov) ov.times.forEach((t) => tset.add(t));
+  const times = [...tset].sort();
+  const slot = new Map(times.map((t, i) => [t, i]));
+  const onGrid = (srcTimes, srcVals) => {
+    const arr = new Array(times.length).fill(null);
+    srcTimes.forEach((t, i) => { arr[slot.get(t)] = srcVals[i]; });
+    return times.map((t, i) => ({ x: t, y: arr[i] }));
+  };
+
+  // `modelId` tags each dataset so the shared legend can toggle a model across
+  // every chart in the location block.
   const datasets = fc.models
     .filter((m) => node.series[m.id])
     .map((m) => ({
-      label: m.label,
-      data: node.times.map((t, i) => ({ x: t, y: node.series[m.id][i] })),
+      label: m.label, modelId: m.id,
+      data: onGrid(node.times, node.series[m.id]),
       borderColor: MODEL_COLORS[m.id] || "#888",
       backgroundColor: MODEL_COLORS[m.id] || "#888",
-      borderWidth: 1.5, pointRadius: 0, tension: 0.25, spanGaps: false,
+      borderWidth: 1.5, tension: 0.25, spanGaps: false,
+      showLine: !scatter, pointRadius: scatter ? 2 : 0,
     }));
-  const ov = obs[loc] && obs[loc][vcfg.key];
   if (ov) {
     datasets.push({
-      label: "Observed", data: ov.times.map((t, i) => ({ x: t, y: ov.values[i] })),
+      label: "Observed", modelId: "__observed__",
+      data: onGrid(ov.times, ov.values),
       borderColor: OBS_COLOR, backgroundColor: OBS_COLOR,
-      borderWidth: 2, pointRadius: 1.6, tension: 0.2, spanGaps: false, order: -1,
+      borderWidth: 2, pointRadius: scatter ? 2.4 : 1.6, tension: 0.2,
+      spanGaps: false, showLine: !scatter, order: -1,
     });
   }
-  charts.push(new Chart(canvas, {
+  // Freezing level: a dashed reference line at this station's elevation, so you
+  // can read at a glance whether the freezing level is above or below you.
+  if (vcfg.refElevation && times.length) {
+    const elev = fc.locations[loc].elevation_m;
+    datasets.push({
+      label: `Station elevation (${elev} m)`, modelId: "__ref__",
+      data: [{ x: times[0], y: elev }, { x: times[times.length - 1], y: elev }],
+      borderColor: "#7d8ea0", backgroundColor: "#7d8ea0",
+      borderWidth: 1, borderDash: [6, 4], pointRadius: 0, tension: 0, spanGaps: true,
+    });
+  }
+
+  const yScale = {
+    title: { display: true, text: fc.units[vcfg.key] || "", color: "#9fb0c3" },
+    ticks: { color: "#9fb0c3" }, grid: { color: "#243246" },
+  };
+  if (vcfg.degrees) {
+    yScale.min = 0; yScale.max = 360;
+    yScale.ticks = { color: "#9fb0c3", stepSize: 90,
+      callback: (val) => COMPASS[val] ?? val };
+  }
+
+  const chart = new Chart(canvas, {
     type: "line",
     data: { datasets },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
+      // "index" mode is reliable now that every dataset shares one time grid: the
+      // hovered index is the same timestamp for model and obs alike.
       interaction: { mode: "index", intersect: false },
-      plugins: { legend: { display: false }, tooltip: { titleFont: { size: 11 }, bodyFont: { size: 11 } } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          titleFont: { size: 11 }, bodyFont: { size: 11 },
+          // Drop the elevation reference line and gap-filled nulls from the tooltip.
+          filter: (item) => item.dataset.modelId !== "__ref__" && item.parsed.y !== null,
+          callbacks: vcfg.degrees
+            ? { label: (c) => `${c.dataset.label}: ${Math.round(c.parsed.y)}°` }
+            : {},
+        },
+      },
       scales: {
         x: { type: "time", time: { tooltipFormat: "EEE MMM d, HH:mm" },
              ticks: { color: "#9fb0c3", maxRotation: 0, autoSkipPadding: 20 }, grid: { color: "#243246" } },
-        y: { title: { display: true, text: fc.units[vcfg.key] || "", color: "#9fb0c3" },
-             ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },
+        y: yScale,
       },
     },
-  }));
+  });
+  return chart;
 }
 
 function makeTable(loc, vcfg, fc) {
@@ -136,14 +203,16 @@ function buildForecast(fc, obs) {
       `<span class="elev">${meta.elevation_m} m</span>` +
       `<span class="role">${meta.role}</span></div>`;
 
-    // shared model legend (+ observed if this location has obs)
+    // shared model legend (+ observed if this location has obs); click a name to
+    // show/hide that model across every chart in this location block.
     const legend = document.createElement("div");
     legend.className = "legend";
     legend.innerHTML = fc.models.map((m) =>
-      `<span><i style="background:${MODEL_COLORS[m.id] || "#888"}"></i>${m.label}</span>`).join("");
-    if (obs[loc]) legend.innerHTML += `<span><i style="background:${OBS_COLOR}"></i>Observed</span>`;
+      `<span class="leg" data-model="${m.id}"><i style="background:${MODEL_COLORS[m.id] || "#888"}"></i>${m.label}</span>`).join("");
+    if (obs[loc]) legend.innerHTML += `<span class="leg" data-model="__observed__"><i style="background:${OBS_COLOR}"></i>Observed</span>`;
     block.appendChild(legend);
 
+    const locCharts = [];
     const grid = document.createElement("div");
     grid.className = "panel-grid";
     for (const vcfg of CHART_VARS) {
@@ -158,9 +227,23 @@ function buildForecast(fc, obs) {
       panel.appendChild(cw);
       panel.appendChild(makeTable(loc, vcfg, fc));
       grid.appendChild(panel);
-      makeChart(canvas, loc, vcfg, fc, obs);
+      locCharts.push(makeChart(canvas, loc, vcfg, fc, obs));
     }
     block.appendChild(grid);
+
+    legend.querySelectorAll(".leg").forEach((span) => {
+      span.onclick = () => {
+        const id = span.dataset.model;
+        const visible = !span.classList.toggle("off");
+        for (const ch of locCharts) {
+          ch.data.datasets.forEach((ds, i) => {
+            if (ds.modelId === id) ch.setDatasetVisibility(i, visible);
+          });
+          ch.update();
+        }
+      };
+    });
+
     root.appendChild(block);
   }
 }
@@ -196,14 +279,17 @@ function buildWebcams(webcams) {
     el.appendChild(caption);
 
     const hasHistory = frames.length > 0 && base;
+    // `frames` is newest-first (idx 0 = newest). The slider runs oldest→newest
+    // left→right (the intuitive timeline), so slider position = reversed idx.
     let idx = 0; // 0 = newest captured frame
 
     function showFrame() {
       const f = frames[idx];
+      const n = frames.length;
       img.src = `${base}/${f.key}`;
-      caption.textContent = `${fmtLocal(f.time)}  (${idx + 1} of ${frames.length}, newest first)`;
-      slider.value = String(idx);
-      older.disabled = idx >= frames.length - 1;
+      caption.textContent = `${fmtLocal(f.time)}  ·  ${n - idx} of ${n} (drag right → newer)`;
+      slider.value = String((n - 1) - idx);
+      older.disabled = idx >= n - 1;
       newer.disabled = idx <= 0;
     }
     function showLive() {
@@ -214,7 +300,7 @@ function buildWebcams(webcams) {
     if (hasHistory) {
       older.onclick = () => { if (idx < frames.length - 1) { idx++; showFrame(); } };
       newer.onclick = () => { if (idx > 0) { idx--; showFrame(); } };
-      slider.oninput = () => { idx = Number(slider.value); showFrame(); };
+      slider.oninput = () => { idx = (frames.length - 1) - Number(slider.value); showFrame(); };
       live.onclick = showLive;
       showFrame();
     } else {

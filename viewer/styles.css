@@ -82,4 +82,6 @@ footer .links { margin: .4rem 0; display: flex; gap: 1rem; flex-wrap: wrap; }
 .legend { display: flex; flex-wrap: wrap; gap: .4rem .9rem; margin: 0 0 1rem; font-size: .8rem; color: var(--ink-dim); }
 .legend span { display: inline-flex; align-items: center; gap: .35rem; }
 .legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.legend .leg { cursor: pointer; user-select: none; }
+.legend .leg.off { opacity: .4; text-decoration: line-through; }
 .note { color: var(--ink-dim); font-size: .8rem; }
