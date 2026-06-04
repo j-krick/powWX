@@ -44,6 +44,13 @@ vs. lead time and ranks the models on a leaderboard.
   the committed Parquet, `align_to_observations` matches each forecast to the
   nearest observation (`merge_asof`, ±30 min) and computes signed error + lead
   day, and `metrics_by_lead` / `overall_metrics` aggregate.
+- **Conditional ("by condition") verification** — `add_strata` +
+  `stratified_metrics` break performance down by **season**, **observed-temperature
+  bin**, and **time of day**, computed *day-ahead* (lead day 1) so models with
+  different horizons compare fairly. This surfaces regime-dependent skill: e.g.
+  GEM RDPS leads in the well-mixed afternoon while ECMWF AIFS wins cold, stable
+  overnight conditions. The viewer has a selector to switch dimensions. (Standard
+  practice — see Murphy & Winkler's joint-distribution framework / WWRP guidance.)
 - **`scripts/build_verification.py`** → `viewer/data/verification.json`. Runs in
   the viewer workflow on every deploy.
 - **Actuals by station:**

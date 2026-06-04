@@ -88,6 +88,33 @@ def build() -> dict:
             overall = ver.overall_metrics(aligned, min_n=MIN_N)
             best = ver.best_by_lead(by_lead)
 
+            # Conditional verification: does the ranking change by regime? Computed
+            # day-ahead (lead day 1) so models with different horizons compare fairly.
+            strat_df = ver.add_strata(aligned, variable=variable)
+            strata: dict = {}
+            for dim, label, order, only_var in ver.STRATA:
+                if only_var is not None and variable != only_var:
+                    continue
+                sm = ver.stratified_metrics(strat_df, by=dim, min_n=MIN_N)
+                if sm.empty:
+                    continue
+                present = [s for s in order if s in set(sm[dim])]
+                by_model = {}
+                for mid, g in sm.groupby("model"):
+                    g = g.set_index(dim).reindex(present).reset_index()
+                    rows = g.dropna(subset=["mae"])[[dim, "n", "mae", "bias", "rmse"]]
+                    rows = rows.rename(columns={dim: "stratum"})
+                    by_model[mid] = _round_records(rows, ["mae", "bias", "rmse"])
+                sbest = ver.best_by_stratum(sm, by=dim).rename(columns={dim: "stratum"})
+                strata[dim] = {
+                    "label": label,
+                    "order": present,
+                    "lead_days": list(ver.STRAT_LEAD_DAYS),
+                    "by_model": by_model,
+                    "best": _round_records(sbest[["stratum", "model", "mae", "n"]], ["mae"]),
+                    "flips": int(sbest["model"].nunique()) > 1,
+                }
+
             # by_lead -> {model: [{lead_day, n, mae, bias, rmse}, ...]} for charting.
             by_lead_models: dict = {}
             for mid, g in by_lead.groupby("model"):
@@ -110,6 +137,7 @@ def build() -> dict:
                 "best_by_lead": _round_records(
                     best[["lead_day", "model", "mae", "n"]], ["mae"]
                 ),
+                "strata": strata,
             }
 
         if per_var:

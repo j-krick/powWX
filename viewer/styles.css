@@ -84,6 +84,20 @@ table.verif tbody tr.leader td { font-weight: 600; }
 table.verif td:first-child, table.verif th:first-child { text-align: left; }
 .mdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: .45rem; vertical-align: middle; }
 
+/* Stratified ("by condition") verification */
+.strata-section { margin: .25rem 0 1.75rem; }
+.strata-section > h3 { margin: 0 0 .15rem; font-size: 1rem; font-weight: 600; }
+.strata-section > h3 .unit { color: var(--ink-dim); font-weight: 400; font-size: .8rem; }
+.strata-section > .note { margin: 0 0 .6rem; max-width: 70ch; }
+.strata-tabs { display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .7rem; }
+.strata-tabs button { background: var(--panel-2); color: var(--ink-dim); border: 1px solid var(--line); border-radius: 6px; padding: .3rem .7rem; cursor: pointer; font-size: .8rem; }
+.strata-tabs button:hover { border-color: var(--accent); }
+.strata-tabs button.active { background: var(--accent); color: #062033; font-weight: 600; border-color: var(--accent); }
+.strata-callout { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: .5rem .8rem; margin-bottom: .8rem; font-size: .88rem; }
+.strata-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1rem; align-items: start; }
+.strata-chart { height: 240px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: .6rem; }
+table.strat td.win { color: var(--ink); font-weight: 700; background: rgba(94, 200, 255, .12); }
+
 /* Webcams */
 #webcams h2 { border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
 #webcam-cams { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 1rem; }

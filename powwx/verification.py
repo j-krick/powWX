@@ -197,3 +197,83 @@ def best_by_lead(by_lead: pd.DataFrame) -> pd.DataFrame:
         .sort_values("lead_day")
         .reset_index(drop=True)
     )
+
+
+# --------------------------------------------------------------------------- #
+# Stratified / conditional verification
+# --------------------------------------------------------------------------- #
+# A single pooled MAE hides regime-dependent skill: a model can lead in winter
+# and trail in spring, or be the only one to handle a cold-air-pool inversion.
+# Conditioning the verification on season / observed value / time of day is the
+# standard way to surface that (Murphy & Winkler joint-distribution framework;
+# WWRP/WMO verification guidance). We compare at a FIXED lead (day-ahead) so the
+# comparison is fair across models with different horizons — pooling all leads
+# would flatter short-range models (e.g. HRDPS) that only contribute easy leads.
+
+_SEASON = {12: "Winter", 1: "Winter", 2: "Winter", 3: "Spring", 4: "Spring",
+           5: "Spring", 6: "Summer", 7: "Summer", 8: "Summer", 9: "Fall",
+           10: "Fall", 11: "Fall"}
+SEASON_ORDER = ["Winter", "Spring", "Summer", "Fall"]
+PART_OF_DAY_ORDER = ["Night", "Morning", "Afternoon", "Evening"]
+OBS_TEMP_BINS = [float("-inf"), -10.0, 0.0, 10.0, float("inf")]
+OBS_TEMP_LABELS = ["≤ −10", "−10 to 0", "0 to 10", "> 10"]  # ≤ −10 / −10 to 0 / …
+LOCAL_TZ = "America/Vancouver"
+STRAT_LEAD_DAYS = (1,)  # day-ahead: fair across models, decision-relevant
+
+# Stratification dimensions available, with display label and category order.
+# obs_temp only applies when the verified variable is itself temperature.
+STRATA = [
+    ("season", "Season", SEASON_ORDER, None),
+    ("obs_temp", "Observed temperature (°C)", OBS_TEMP_LABELS, "temperature_2m"),
+    ("part_of_day", "Time of day (local)", PART_OF_DAY_ORDER, None),
+]
+
+
+def _part_of_day(hour: int) -> str:
+    if hour < 6:
+        return "Night"
+    if hour < 12:
+        return "Morning"
+    if hour < 18:
+        return "Afternoon"
+    return "Evening"
+
+
+def add_strata(aligned: pd.DataFrame, *, variable: str) -> pd.DataFrame:
+    """Tag each matched pair with its season, local time-of-day, and (for
+    temperature) observed-value bin, for conditional verification."""
+    if aligned.empty:
+        return aligned
+    df = aligned.copy()
+    df["season"] = df["valid_time"].dt.month.map(_SEASON)
+    df["part_of_day"] = df["valid_time"].dt.tz_convert(LOCAL_TZ).dt.hour.map(_part_of_day)
+    if variable == "temperature_2m":
+        df["obs_temp"] = pd.cut(
+            df["observed"], bins=OBS_TEMP_BINS, labels=OBS_TEMP_LABELS
+        ).astype(str)
+    return df
+
+
+def stratified_metrics(
+    aligned: pd.DataFrame, *, by: str, lead_days=STRAT_LEAD_DAYS, min_n: int = 20
+) -> pd.DataFrame:
+    """MAE / bias / RMSE / n per ``(stratum, model)`` at a fixed lead window."""
+    if aligned.empty or by not in aligned.columns:
+        return pd.DataFrame(columns=[by, "model", "n", "mae", "bias", "rmse"])
+    sub = aligned[aligned["lead_day"].isin(lead_days)]
+    if sub.empty:
+        return pd.DataFrame(columns=[by, "model", "n", "mae", "bias", "rmse"])
+    out = (
+        sub.groupby([by, "model"], sort=True)
+        .apply(_agg, include_groups=False)
+        .reset_index()
+    )
+    return out[out["n"] >= min_n].reset_index(drop=True)
+
+
+def best_by_stratum(strat: pd.DataFrame, *, by: str) -> pd.DataFrame:
+    """For each stratum, the model with the lowest MAE."""
+    if strat.empty:
+        return pd.DataFrame(columns=[by, "model", "mae", "n"])
+    idx = strat.groupby(by)["mae"].idxmin()
+    return strat.loc[idx, [by, "model", "mae", "n"]].reset_index(drop=True)

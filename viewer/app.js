@@ -447,6 +447,141 @@ function makeOverallTable(locVar, ver, unit) {
   return wrap;
 }
 
+// Conditional verification: one line per model across a stratum's categories
+// (season / observed-temp bin / time of day). Lines crossing = the ranking
+// flips by condition. Computed day-ahead so models compare fairly.
+function makeStratChart(canvas, sd, ver, unit) {
+  const order = sd.order;
+  const datasets = ver.models
+    .filter((m) => sd.by_model[m.id])
+    .map((m) => {
+      const byS = new Map(sd.by_model[m.id].map((r) => [r.stratum, r.mae]));
+      return {
+        label: m.label, modelId: m.id,
+        data: order.map((s) => (byS.has(s) ? byS.get(s) : null)),
+        borderColor: MODEL_COLORS[m.id] || "#888",
+        backgroundColor: MODEL_COLORS[m.id] || "#888",
+        borderWidth: 1.6, tension: 0.2, pointRadius: 3, spanGaps: false,
+      };
+    });
+  return new Chart(canvas, {
+    type: "line",
+    data: { labels: order, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          titleFont: { size: 11 }, bodyFont: { size: 11 },
+          filter: (i) => i.parsed.y !== null,
+          callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(2)} ${unit}` },
+        },
+      },
+      scales: {
+        x: { ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },
+        y: { title: { display: true, text: `MAE (${unit})`, color: "#9fb0c3" },
+             ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },
+      },
+    },
+  });
+}
+
+function renderStratTable(wrap, sd, ver, unit) {
+  const labels = Object.fromEntries(ver.models.map((m) => [m.id, m.label]));
+  const winner = {};
+  sd.best.forEach((b) => { winner[b.stratum] = b.model; });
+  wrap.innerHTML = "";
+  const table = document.createElement("table");
+  table.className = "fc verif strat";
+  table.innerHTML =
+    `<thead><tr><th>Model</th>${sd.order.map((s) => `<th>${s}</th>`).join("")}</tr></thead>`;
+  const tbody = document.createElement("tbody");
+  ver.models.filter((m) => sd.by_model[m.id]).forEach((m) => {
+    const byS = new Map(sd.by_model[m.id].map((r) => [r.stratum, r.mae]));
+    const cells = sd.order.map((s) => {
+      const v = byS.has(s) ? byS.get(s).toFixed(2) : "—";
+      const win = winner[s] === m.id ? ' class="win"' : "";
+      return `<td${win}>${v}</td>`;
+    }).join("");
+    const dot = `<i class="mdot" style="background:${MODEL_COLORS[m.id] || "#888"}"></i>`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${dot}${labels[m.id] || m.id}</td>${cells}`;
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  const cap = document.createElement("div");
+  cap.className = "note";
+  cap.textContent = `MAE (${unit}); lowest per column highlighted · day-ahead forecasts`;
+  wrap.appendChild(cap);
+}
+
+function renderStrata(block, lv, ver, unit, legend, stratHolder) {
+  const strata = lv.strata;
+  if (!strata || !Object.keys(strata).length) return;
+  const dims = Object.keys(strata);
+
+  const sect = document.createElement("div");
+  sect.className = "strata-section";
+  sect.innerHTML =
+    `<h3>Performance by condition <span class="unit">day-ahead</span></h3>` +
+    `<p class="note">Does the best model change with the weather? Day-ahead error, so models with different horizons compare fairly.</p>`;
+
+  const tabs = document.createElement("div");
+  tabs.className = "strata-tabs";
+  dims.forEach((d, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = strata[d].label; b.dataset.dim = d;
+    if (i === 0) b.classList.add("active");
+    tabs.appendChild(b);
+  });
+  sect.appendChild(tabs);
+
+  const noteEl = document.createElement("div");
+  noteEl.className = "strata-callout";
+  const grid = document.createElement("div");
+  grid.className = "strata-grid";
+  const cwrap = document.createElement("div");
+  cwrap.className = "chart-wrap strata-chart";
+  const canvas = document.createElement("canvas");
+  cwrap.appendChild(canvas);
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "table-scroll";
+  grid.append(cwrap, tableWrap);
+  sect.append(noteEl, grid);
+  block.appendChild(sect);
+
+  const labels = Object.fromEntries(ver.models.map((m) => [m.id, m.label]));
+  const offSet = () =>
+    new Set([...legend.querySelectorAll(".leg.off")].map((s) => s.dataset.model));
+
+  function draw(dim) {
+    const sd = strata[dim];
+    if (stratHolder.chart) stratHolder.chart.destroy();
+    const chart = makeStratChart(canvas, sd, ver, unit);
+    const off = offSet();
+    chart.data.datasets.forEach((ds, i) => {
+      if (off.has(ds.modelId)) chart.setDatasetVisibility(i, false);
+    });
+    chart.update();
+    stratHolder.chart = chart;
+    renderStratTable(tableWrap, sd, ver, unit);
+    const wins = sd.best.map((b) => `${b.stratum}: <strong>${labels[b.model] || b.model}</strong>`).join(" · ");
+    noteEl.innerHTML = (sd.flips
+      ? `🔀 The most accurate model <strong>changes</strong> by ${sd.label.toLowerCase()}. `
+      : `One model leads across every ${sd.label.toLowerCase()} bin. `) + `Winner → ${wins}`;
+  }
+  tabs.querySelectorAll("button").forEach((b) => {
+    b.onclick = () => {
+      tabs.querySelectorAll("button").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      draw(b.dataset.dim);
+    };
+  });
+  draw(dims[0]);
+}
+
 function buildVerification(ver) {
   const intro = document.getElementById("verification-intro");
   const body = document.getElementById("verification-body");
@@ -507,6 +642,7 @@ function buildVerification(ver) {
       const grid = document.createElement("div");
       grid.className = "panel-grid";
       const charts = [];
+      const stratHolder = { chart: null };
       for (const metric of ["mae", "bias"]) {
         const panel = document.createElement("div");
         panel.className = "panel";
@@ -527,11 +663,14 @@ function buildVerification(ver) {
       grid.appendChild(tpanel);
       block.appendChild(grid);
 
+      renderStrata(block, lv, ver, unit, legend, stratHolder);
+
       legend.querySelectorAll(".leg").forEach((span) => {
         span.onclick = () => {
           const id = span.dataset.model;
           const visible = !span.classList.toggle("off");
-          for (const ch of charts) {
+          const all = stratHolder.chart ? [...charts, stratHolder.chart] : charts;
+          for (const ch of all) {
             ch.data.datasets.forEach((ds, i) => {
               if (ds.modelId === id) ch.setDatasetVisibility(i, visible);
             });
