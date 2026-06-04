@@ -29,6 +29,7 @@ _netcompat.enable()
 
 import pandas as pd  # noqa: E402
 
+from powwx import blend as bl  # noqa: E402
 from powwx import config as cfg  # noqa: E402
 from powwx import obs_logger  # noqa: E402
 from powwx import observations as obs  # noqa: E402
@@ -59,12 +60,63 @@ def _round_records(df, cols, nd=2) -> list[dict]:
     return out.to_dict("records")
 
 
-def build() -> dict:
+def _blend_summary(overall, by_lead, best_raw) -> dict | None:
+    """Compare the blend against the best single (raw) model, overall and by lead."""
+    bo = overall[overall["model"] == bl.BLEND_ID]
+    raw = overall[overall["model"] != bl.BLEND_ID]
+    if bo.empty or raw.empty:
+        return None
+    b = bo.iloc[0]
+    best_raw_overall = raw.iloc[0]  # overall is sorted by MAE ascending
+    # Per-lead: blend MAE vs the best raw model's MAE at that lead.
+    raw_best = {int(r["lead_day"]): r["mae"] for _, r in best_raw.iterrows()}
+    blend_lead = by_lead[by_lead["model"] == bl.BLEND_ID].sort_values("lead_day")
+    per_lead = []
+    for _, r in blend_lead.iterrows():
+        ld = int(r["lead_day"])
+        per_lead.append({"lead_day": ld, "blend_mae": round(float(r["mae"]), 2),
+                         "best_raw_mae": round(float(raw_best.get(ld, float("nan"))), 2)
+                         if ld in raw_best else None})
+    impr = (best_raw_overall["mae"] - b["mae"]) / best_raw_overall["mae"] * 100.0
+    return {
+        "overall": {"mae": round(float(b["mae"]), 2), "bias": round(float(b["bias"]), 2),
+                    "rmse": round(float(b["rmse"]), 2), "n": int(b["n"])},
+        "best_raw_model": best_raw_overall["model"],
+        "best_raw_mae": round(float(best_raw_overall["mae"]), 2),
+        "improvement_pct": round(float(impr), 1),
+        "beats_best_raw": bool(b["mae"] < best_raw_overall["mae"]),
+        "by_lead": per_lead,
+    }
+
+
+def _live_blend_series(fc, aligned) -> dict | None:
+    """Forward blend for the latest live run: learn coefficients as of now from the
+    matched pairs, apply to the most recent live forecast. Returns times/values."""
+    live = fc[fc["source"] == "live"]
+    if live.empty or aligned.empty:
+        return None
+    latest = live["issued_at"].max()
+    run = live[live["issued_at"] == latest].copy()
+    lead = (run["valid_time"] - run["issued_at"]).dt.total_seconds() / 86400.0
+    run["lead_day"] = lead.round().astype(int)
+    coef = bl.learn_coefficients(aligned, asof=pd.Timestamp(datetime.now(timezone.utc)))
+    series = bl.live_blend(run[["model", "valid_time", "value", "lead_day"]], coef)
+    if series.empty:
+        return None
+    return {
+        "issued_at": latest.strftime("%Y-%m-%dT%H:%MZ"),
+        "times": [t.strftime("%Y-%m-%dT%H:%MZ") for t in series["valid_time"]],
+        "values": [round(float(v), 2) for v in series["value"]],
+    }
+
+
+def build() -> tuple[dict, dict]:
     models_cfg = cfg.load_models()
     locations = cfg.load_locations()
     labels = {m["id"]: m["label"] for m in models_cfg["models"]}
 
     result_locs: dict = {}
+    blend_live_locs: dict = {}
     for loc in locations:
         lid = loc["id"]
         per_var: dict = {}
@@ -84,9 +136,19 @@ def build() -> dict:
                       f"(obs rows={len(obs_df)}, forecast rows={len(fc)})", file=sys.stderr)
                 continue
 
-            by_lead = ver.metrics_by_lead(aligned, min_n=MIN_N)
-            overall = ver.overall_metrics(aligned, min_n=MIN_N)
-            best = ver.best_by_lead(by_lead)
+            # powWX blend: walk-forward (out-of-sample) bias-corrected consensus,
+            # added as a pseudo-model so it's ranked honestly against the raw models.
+            blend_pairs = bl.walk_forward_blend(aligned)
+            combined = (pd.concat([aligned, blend_pairs], ignore_index=True)
+                        if not blend_pairs.empty else aligned)
+
+            by_lead = ver.metrics_by_lead(combined, min_n=MIN_N)        # incl. blend
+            overall = ver.overall_metrics(combined, min_n=MIN_N)        # incl. blend
+            # best_by_lead stays RAW-only so the "which model leads" story is about
+            # the source models, not the blend that's built from them.
+            best = ver.best_by_lead(ver.metrics_by_lead(aligned, min_n=MIN_N))
+
+            blend_summary = _blend_summary(overall, by_lead, best)
 
             # Conditional verification: does the ranking change by regime? Computed
             # day-ahead (lead day 1) so models with different horizons compare fairly.
@@ -137,8 +199,13 @@ def build() -> dict:
                 "best_by_lead": _round_records(
                     best[["lead_day", "model", "mae", "n"]], ["mae"]
                 ),
+                "blend": blend_summary,
                 "strata": strata,
             }
+
+            live = _live_blend_series(fc, aligned)
+            if live is not None:
+                blend_live_locs.setdefault(lid, {})[variable] = live
 
         if per_var:
             result_locs[lid] = {
@@ -150,36 +217,53 @@ def build() -> dict:
                 "variables": per_var,
             }
 
-    return {
+    payload = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
         "tolerance_minutes": TOLERANCE_MINUTES,
         "min_n": MIN_N,
         "units": {"temperature_2m": "°C"},
         "var_labels": {"temperature_2m": "Temperature"},
-        "models": [{"id": m["id"], "label": labels[m["id"]]} for m in models_cfg["models"]],
+        "models": ([{"id": m["id"], "label": labels[m["id"]]} for m in models_cfg["models"]]
+                   + [{"id": bl.BLEND_ID, "label": bl.BLEND_LABEL}]),
         "locations": result_locs,
         "notes": (
             "Error = forecast − observed. MAE/bias/RMSE in the variable's units. "
             "Lead day = forecast valid time minus issue time, rounded to whole days "
             "(backfill rows are exact integer-day offsets). Cells with < "
-            f"{MIN_N} matched pairs are dropped."
+            f"{MIN_N} matched pairs are dropped. The powWX blend is a bias-corrected, "
+            "inverse-MAE-weighted consensus, validated walk-forward (out-of-sample)."
         ),
         "attribution": "Forecasts by Open-Meteo.com (CC BY 4.0). Actuals: POW-O-METER "
                        "(top) and Avalanche Canada / BC MoTI station #58 (bottom).",
     }
+    blend_payload = {
+        "generated_at": payload["generated_at"],
+        "window_days": bl.WINDOW_DAYS,
+        "units": {"temperature_2m": "°C"},
+        "note": "powWX blend: per-model bias removed and inverse-MAE weighted, "
+                f"coefficients from the trailing {bl.WINDOW_DAYS} days.",
+        "locations": blend_live_locs,
+    }
+    return payload, blend_payload
 
 
 def main() -> int:
     out_dir = cfg.REPO_ROOT / "viewer" / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
-    payload = build()
+    payload, blend_payload = build()
     (out_dir / "verification.json").write_text(
         json.dumps(payload, separators=(",", ":")), encoding="utf-8"
+    )
+    (out_dir / "blend.json").write_text(
+        json.dumps(blend_payload, separators=(",", ":")), encoding="utf-8"
     )
 
     summary = {
         lid: {
-            v: {"n_pairs": d["n_pairs"], "best_overall": d["overall"][0]["model"] if d["overall"] else None}
+            v: {"n_pairs": d["n_pairs"], "best_overall": d["overall"][0]["model"] if d["overall"] else None,
+                "blend": (f"{d['blend']['overall']['mae']} vs best raw {d['blend']['best_raw_mae']} "
+                          f"({'+' if d['blend']['improvement_pct'] >= 0 else ''}{d['blend']['improvement_pct']}%)")
+                if d.get("blend") else None}
             for v, d in loc["variables"].items()
         }
         for lid, loc in payload["locations"].items()

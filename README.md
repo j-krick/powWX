@@ -53,6 +53,17 @@ vs. lead time and ranks the models on a leaderboard.
   practice — see Murphy & Winkler's joint-distribution framework / WWRP guidance.)
 - **`scripts/build_verification.py`** → `viewer/data/verification.json`. Runs in
   the viewer workflow on every deploy.
+- **powWX blend** (`powwx/blend.py`) — our own composed temperature forecast: each
+  model's per-lead **bias is removed** and the models are combined **inverse-MAE
+  weighted** (a bias-corrected consensus, à la NWS National Blend of Models /
+  Krishnamurti superensemble). Coefficients are learned from a trailing 90-day
+  window; the blend is evaluated **walk-forward (out-of-sample)** — retrained each
+  month on only prior data — and added to the leaderboard as `powwx_blend` so the
+  "does it beat the best single model?" question is answered honestly. It does at
+  the top (≈ +3 % MAE) and through the 1–5-day range at the bottom. The live
+  blended series is written to `blend.json` and shown as a bold gold line in the
+  temperature chart. **Strictly causal** — no forecast is informed by its own
+  outcome (see the tests).
 - **Actuals by station:**
   - POW-O-METER (top) is read straight from its Google Sheet (durable history
     back to 2025-01-26), so the backfill is verifiable **today** — ~243 k matched

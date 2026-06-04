@@ -81,6 +81,10 @@ table.fc tbody tr:hover { background: var(--panel-2); }
 .verif-callout strong { color: var(--ink); }
 table.verif tbody tr.leader { background: rgba(94, 200, 255, .1); }
 table.verif tbody tr.leader td { font-weight: 600; }
+table.verif tbody tr.blend-row td { color: #ffcc33; font-weight: 600; }
+.blend-callout { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid #ffcc33; border-radius: 10px; padding: .5rem .9rem; margin: -.5rem 0 1rem; font-size: .9rem; }
+.blend-callout p { margin: .15rem 0; }
+.legend .blend-leg { font-weight: 600; }
 table.verif td:first-child, table.verif th:first-child { text-align: left; }
 .mdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: .45rem; vertical-align: middle; }
 

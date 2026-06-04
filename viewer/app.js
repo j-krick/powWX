@@ -9,6 +9,7 @@ const MODEL_COLORS = {
   ecmwf_aifs025_single: "#42d4f4",
   gfs_seamless: "#3cb44b",
   icon_global: "#b05ce6",
+  powwx_blend: "#ffcc33",   // bias-corrected consensus — distinct gold
 };
 const OBS_COLOR = "#ffffff";
 
@@ -156,10 +157,12 @@ function aggregate(values, type) {
 
 const COMPASS = { 0: "N", 90: "E", 180: "S", 270: "W", 360: "N" };
 
-function makeChart(canvas, loc, vcfg, fc, obs) {
+function makeChart(canvas, loc, vcfg, fc, obs, blendLoc) {
   const node = fc.forecast[loc][vcfg.key];
   const scatter = !!vcfg.scatter; // wind direction: points, not a wrapping line
   const ov = obs[loc] && obs[loc][vcfg.key];
+  // The powWX blend is a temperature-only product (for now).
+  const blend = vcfg.key === "temperature_2m" ? blendLoc : null;
 
   // Unified time axis: model series (-12h..+7d) and observations (past only) sit
   // on different grids, so build one sorted set of all timestamps and align every
@@ -167,6 +170,7 @@ function makeChart(canvas, loc, vcfg, fc, obs) {
   // correctly — both sources report on the exact hour, so slots merge cleanly.
   const tset = new Set(node.times);
   if (ov) ov.times.forEach((t) => tset.add(t));
+  if (blend) blend.times.forEach((t) => tset.add(t));
   const times = [...tset].sort();
   const slot = new Map(times.map((t, i) => [t, i]));
   const onGrid = (srcTimes, srcVals) => {
@@ -194,6 +198,15 @@ function makeChart(canvas, loc, vcfg, fc, obs) {
       borderColor: OBS_COLOR, backgroundColor: OBS_COLOR,
       borderWidth: 2, pointRadius: scatter ? 2.4 : 1.6, tension: 0.2,
       spanGaps: false, showLine: !scatter, order: -1,
+    });
+  }
+  // powWX blend: bias-corrected, skill-weighted consensus — bold gold line on top.
+  if (blend) {
+    datasets.push({
+      label: "powWX blend", modelId: "powwx_blend",
+      data: onGrid(blend.times, blend.values),
+      borderColor: MODEL_COLORS.powwx_blend, backgroundColor: MODEL_COLORS.powwx_blend,
+      borderWidth: 3, tension: 0.25, pointRadius: 0, spanGaps: false, order: -2,
     });
   }
   // Freezing level: a dashed reference line at this station's elevation, so you
@@ -296,14 +309,16 @@ function makeTable(loc, vcfg, fc) {
   return wrap;
 }
 
-function buildForecast(fc, obs) {
+function buildForecast(fc, obs, blend) {
   const root = document.getElementById("forecast");
   root.innerHTML = "";
+  const blendLocs = (blend && blend.locations) || {};
   const locIds = Object.keys(fc.locations).sort(
     (a, b) => fc.locations[b].elevation_m - fc.locations[a].elevation_m);
 
   for (const loc of locIds) {
     const meta = fc.locations[loc];
+    const blendLoc = blendLocs[loc] && blendLocs[loc].temperature_2m;
     const block = document.createElement("div");
     block.className = "loc-block";
     block.innerHTML =
@@ -318,6 +333,7 @@ function buildForecast(fc, obs) {
     legend.innerHTML = fc.models.map((m) =>
       `<span class="leg" data-model="${m.id}"><i style="background:${MODEL_COLORS[m.id] || "#888"}"></i>${m.label}</span>`).join("");
     if (obs[loc]) legend.innerHTML += `<span class="leg" data-model="__observed__"><i style="background:${OBS_COLOR}"></i>Observed</span>`;
+    if (blendLoc) legend.innerHTML += `<span class="leg blend-leg" data-model="powwx_blend"><i style="background:${MODEL_COLORS.powwx_blend}"></i>powWX blend</span>`;
     block.appendChild(legend);
 
     const locCharts = [];
@@ -335,7 +351,7 @@ function buildForecast(fc, obs) {
       panel.appendChild(cw);
       panel.appendChild(makeTable(loc, vcfg, fc));
       grid.appendChild(panel);
-      locCharts.push(makeChart(canvas, loc, vcfg, fc, obs));
+      locCharts.push(makeChart(canvas, loc, vcfg, fc, obs, blendLoc));
     }
     block.appendChild(grid);
 
@@ -378,7 +394,8 @@ function makeMetricChart(canvas, locVar, ver, metric, unit) {
         data: xs.map((d) => ({ x: d, y: byDay.has(d) ? byDay.get(d) : null })),
         borderColor: MODEL_COLORS[m.id] || "#888",
         backgroundColor: MODEL_COLORS[m.id] || "#888",
-        borderWidth: 1.6, tension: 0.2, spanGaps: false, pointRadius: 2.4,
+        borderWidth: m.id === "powwx_blend" ? 3 : 1.6, tension: 0.2,
+        spanGaps: false, pointRadius: m.id === "powwx_blend" ? 3 : 2.4,
       };
     });
   // Zero reference for the bias chart (perfect = on the line).
@@ -430,7 +447,10 @@ function makeOverallTable(locVar, ver, unit) {
   const tbody = document.createElement("tbody");
   locVar.overall.forEach((r, i) => {
     const tr = document.createElement("tr");
-    if (i === 0) tr.className = "leader"; // lowest MAE
+    const cls = [];
+    if (i === 0) cls.push("leader"); // lowest MAE
+    if (r.model === "powwx_blend") cls.push("blend-row");
+    tr.className = cls.join(" ");
     const dot = `<i class="mdot" style="background:${MODEL_COLORS[r.model] || "#888"}"></i>`;
     tr.innerHTML =
       `<td>${dot}${labels[r.model] || r.model}${i === 0 ? " 🏆" : ""}</td>` +
@@ -607,7 +627,8 @@ function buildVerification(ver) {
       const lv = loc.variables[vkey];
       const unit = (ver.units && ver.units[vkey]) || "";
       const vlabel = (ver.var_labels && ver.var_labels[vkey]) || vkey;
-      const best = lv.overall[0];
+      // Headline names the best *source* model (the blend has its own callout).
+      const best = lv.overall.find((r) => r.model !== "powwx_blend") || lv.overall[0];
 
       const head = document.createElement("div");
       head.className = "loc-head";
@@ -629,6 +650,21 @@ function buildVerification(ver) {
         `${lv.period.start.slice(0, 10)} → ${lv.period.end.slice(0, 10)} · ` +
         `actuals: ${loc.obs_source}</p>`;
       block.appendChild(callout);
+
+      // powWX blend callout — our composed forecast, judged out-of-sample.
+      if (lv.blend) {
+        const bd = lv.blend;
+        const rawLabel = labels[bd.best_raw_model] || bd.best_raw_model;
+        const verdict = bd.beats_best_raw
+          ? `<strong>beats</strong> the best single model (${rawLabel}) by <strong>${bd.improvement_pct}%</strong> overall`
+          : `is within <strong>${Math.abs(bd.improvement_pct)}%</strong> of the best single model (${rawLabel}) overall — and leads through the mid-range (see the chart)`;
+        const bc = document.createElement("div");
+        bc.className = "blend-callout";
+        bc.innerHTML =
+          `<p>⚙️ <strong style="color:${MODEL_COLORS.powwx_blend}">powWX blend</strong> — bias-corrected, skill-weighted consensus, judged <em>out-of-sample</em> — ${verdict}. ` +
+          `MAE <strong>${bd.overall.mae} ${unit}</strong> (bias ${bd.overall.bias >= 0 ? "+" : ""}${bd.overall.bias}).</p>`;
+        block.appendChild(bc);
+      }
 
       // Shared per-model legend (toggles both charts in this block).
       const legend = document.createElement("div");
@@ -782,7 +818,10 @@ async function main() {
   try {
     const [fc, obs, webcams, meta] = await Promise.all(
       ["forecast", "observations", "webcams", "meta"].map(loadJSON));
-    buildForecast(fc, obs);
+    // Blend is optional — tolerate its absence so the viewer still renders.
+    let blend = null;
+    try { blend = await loadJSON("blend"); } catch (e) { console.warn("blend skipped:", e.message); }
+    buildForecast(fc, obs, blend);
     // Verification is optional: tolerate its absence so the rest of the viewer
     // still renders if verification.json hasn't been generated yet.
     try {
