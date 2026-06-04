@@ -72,6 +72,18 @@ table.fc thead th { color: var(--ink-dim); font-weight: 600; }
 table.fc tbody tr:hover { background: var(--panel-2); }
 .table-scroll { overflow-x: auto; }
 
+/* Verification */
+#verification > h2 { border-bottom: 1px solid var(--line); padding-bottom: .35rem; display: flex; align-items: baseline; gap: .6rem; }
+#verification .badge { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #062033; background: var(--accent); padding: .12rem .5rem; border-radius: 999px; }
+#verification-intro { max-width: 70ch; margin-top: .5rem; }
+.verif-callout { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px; padding: .6rem .9rem; margin-bottom: 1rem; }
+.verif-callout p { margin: .2rem 0; }
+.verif-callout strong { color: var(--ink); }
+table.verif tbody tr.leader { background: rgba(94, 200, 255, .1); }
+table.verif tbody tr.leader td { font-weight: 600; }
+table.verif td:first-child, table.verif th:first-child { text-align: left; }
+.mdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: .45rem; vertical-align: middle; }
+
 /* Webcams */
 #webcams h2 { border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
 #webcam-cams { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 1rem; }

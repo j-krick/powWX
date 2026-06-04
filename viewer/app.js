@@ -356,6 +356,194 @@ function buildForecast(fc, obs) {
   }
 }
 
+// ---- verification (Phase 2) ----------------------------------------------
+// "Which model wins, where, at which horizon." Reads verification.json: per
+// location/variable, MAE / bias / RMSE per model and lead day. Charts use a
+// linear lead-day x-axis (days ahead), so they stay OUT of the time-axis
+// pan/zoom sync that the forecast charts share.
+
+const METRIC_LABELS = { mae: "Mean absolute error", bias: "Bias (forecast − observed)" };
+
+function makeMetricChart(canvas, locVar, ver, metric, unit) {
+  const maxLead = locVar.max_lead_day || 1;
+  const xs = [];
+  for (let d = 1; d <= maxLead; d++) xs.push(d);
+
+  const datasets = ver.models
+    .filter((m) => locVar.by_lead[m.id])
+    .map((m) => {
+      const byDay = new Map(locVar.by_lead[m.id].map((r) => [r.lead_day, r[metric]]));
+      return {
+        label: m.label, modelId: m.id,
+        data: xs.map((d) => ({ x: d, y: byDay.has(d) ? byDay.get(d) : null })),
+        borderColor: MODEL_COLORS[m.id] || "#888",
+        backgroundColor: MODEL_COLORS[m.id] || "#888",
+        borderWidth: 1.6, tension: 0.2, spanGaps: false, pointRadius: 2.4,
+      };
+    });
+  // Zero reference for the bias chart (perfect = on the line).
+  if (metric === "bias") {
+    datasets.push({
+      label: "zero", modelId: "__zero__",
+      data: [{ x: 1, y: 0 }, { x: maxLead, y: 0 }],
+      borderColor: "#7d8ea0", borderWidth: 1, borderDash: [6, 4],
+      pointRadius: 0, tension: 0, order: 10,
+    });
+  }
+
+  return new Chart(canvas, {
+    type: "line",
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          titleFont: { size: 11 }, bodyFont: { size: 11 },
+          filter: (i) => i.dataset.modelId !== "__zero__" && i.parsed.y !== null,
+          callbacks: {
+            title: (items) => `Lead day ${items[0].parsed.x}`,
+            label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(2)} ${unit}`,
+          },
+        },
+      },
+      scales: {
+        x: { type: "linear", min: 1, max: maxLead,
+             title: { display: true, text: "Lead time (days ahead)", color: "#9fb0c3" },
+             ticks: { color: "#9fb0c3", stepSize: 1, precision: 0 }, grid: { color: "#243246" } },
+        y: { title: { display: true, text: unit, color: "#9fb0c3" },
+             ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },
+      },
+    },
+  });
+}
+
+function makeOverallTable(locVar, ver, unit) {
+  const labels = Object.fromEntries(ver.models.map((m) => [m.id, m.label]));
+  const wrap = document.createElement("div");
+  wrap.className = "table-scroll";
+  const table = document.createElement("table");
+  table.className = "fc verif";
+  table.innerHTML =
+    `<thead><tr><th>Model</th><th>MAE</th><th>Bias</th><th>RMSE</th><th>n</th></tr></thead>`;
+  const tbody = document.createElement("tbody");
+  locVar.overall.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    if (i === 0) tr.className = "leader"; // lowest MAE
+    const dot = `<i class="mdot" style="background:${MODEL_COLORS[r.model] || "#888"}"></i>`;
+    tr.innerHTML =
+      `<td>${dot}${labels[r.model] || r.model}${i === 0 ? " 🏆" : ""}</td>` +
+      `<td>${r.mae.toFixed(2)}</td><td>${r.bias.toFixed(2)}</td>` +
+      `<td>${r.rmse.toFixed(2)}</td><td>${r.n.toLocaleString()}</td>`;
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  const cap = document.createElement("div");
+  cap.className = "note";
+  cap.textContent = `pooled across all lead days · values in ${unit} · ranked by MAE`;
+  wrap.appendChild(cap);
+  return wrap;
+}
+
+function buildVerification(ver) {
+  const intro = document.getElementById("verification-intro");
+  const body = document.getElementById("verification-body");
+  body.innerHTML = "";
+  const locs = ver.locations || {};
+  const ids = Object.keys(locs).sort(
+    (a, b) => locs[b].elevation_m - locs[a].elevation_m);
+
+  if (!ids.length) {
+    intro.textContent = "No verifiable forecast/observation pairs yet — the record is still accruing.";
+    return;
+  }
+  intro.textContent = ver.notes || "";
+
+  const labels = Object.fromEntries(ver.models.map((m) => [m.id, m.label]));
+
+  for (const lid of ids) {
+    const loc = locs[lid];
+    const block = document.createElement("div");
+    block.className = "loc-block";
+
+    for (const vkey of Object.keys(loc.variables)) {
+      const lv = loc.variables[vkey];
+      const unit = (ver.units && ver.units[vkey]) || "";
+      const vlabel = (ver.var_labels && ver.var_labels[vkey]) || vkey;
+      const best = lv.overall[0];
+
+      const head = document.createElement("div");
+      head.className = "loc-head";
+      head.innerHTML =
+        `<h2>${loc.label}</h2><span class="elev">${loc.elevation_m} m</span>` +
+        `<span class="role">${vlabel}</span>`;
+      block.appendChild(head);
+
+      // Winner callout + period/coverage.
+      const callout = document.createElement("div");
+      callout.className = "verif-callout";
+      const dayWins = lv.best_by_lead
+        .map((b) => `d${b.lead_day}: ${labels[b.model] || b.model}`).join(" · ");
+      callout.innerHTML =
+        `<p>🏆 <strong>${labels[best.model] || best.model}</strong> has the lowest error here — ` +
+        `MAE <strong>${best.mae.toFixed(2)} ${unit}</strong> over ${best.n.toLocaleString()} matched hours.</p>` +
+        `<p class="note">Best by lead day → ${dayWins}</p>` +
+        `<p class="note">${lv.n_pairs.toLocaleString()} forecast/observation pairs · ` +
+        `${lv.period.start.slice(0, 10)} → ${lv.period.end.slice(0, 10)} · ` +
+        `actuals: ${loc.obs_source}</p>`;
+      block.appendChild(callout);
+
+      // Shared per-model legend (toggles both charts in this block).
+      const legend = document.createElement("div");
+      legend.className = "legend";
+      legend.innerHTML = ver.models
+        .filter((m) => lv.by_lead[m.id])
+        .map((m) => `<span class="leg" data-model="${m.id}"><i style="background:${MODEL_COLORS[m.id] || "#888"}"></i>${m.label}</span>`)
+        .join("");
+      block.appendChild(legend);
+
+      const grid = document.createElement("div");
+      grid.className = "panel-grid";
+      const charts = [];
+      for (const metric of ["mae", "bias"]) {
+        const panel = document.createElement("div");
+        panel.className = "panel";
+        panel.innerHTML = `<h3>${METRIC_LABELS[metric]} <span class="unit">${unit}</span></h3>`;
+        const cw = document.createElement("div");
+        cw.className = "chart-wrap";
+        const canvas = document.createElement("canvas");
+        cw.appendChild(canvas);
+        panel.appendChild(cw);
+        grid.appendChild(panel);
+        charts.push(makeMetricChart(canvas, lv, ver, metric, unit));
+      }
+      // Leaderboard table panel.
+      const tpanel = document.createElement("div");
+      tpanel.className = "panel";
+      tpanel.innerHTML = `<h3>Leaderboard <span class="unit">all lead days</span></h3>`;
+      tpanel.appendChild(makeOverallTable(lv, ver, unit));
+      grid.appendChild(tpanel);
+      block.appendChild(grid);
+
+      legend.querySelectorAll(".leg").forEach((span) => {
+        span.onclick = () => {
+          const id = span.dataset.model;
+          const visible = !span.classList.toggle("off");
+          for (const ch of charts) {
+            ch.data.datasets.forEach((ds, i) => {
+              if (ds.modelId === id) ch.setDatasetVisibility(i, visible);
+            });
+            ch.update();
+          }
+        };
+      });
+    }
+    body.appendChild(block);
+  }
+}
+
 // ---- webcams -------------------------------------------------------------
 
 function buildWebcams(webcams) {
@@ -456,6 +644,15 @@ async function main() {
     const [fc, obs, webcams, meta] = await Promise.all(
       ["forecast", "observations", "webcams", "meta"].map(loadJSON));
     buildForecast(fc, obs);
+    // Verification is optional: tolerate its absence so the rest of the viewer
+    // still renders if verification.json hasn't been generated yet.
+    try {
+      buildVerification(await loadJSON("verification"));
+    } catch (e) {
+      console.warn("verification panel skipped:", e.message);
+      const sec = document.getElementById("verification");
+      if (sec) sec.style.display = "none";
+    }
     buildWebcams(webcams);
     buildFooter(meta);
     setStatus(fc, obs, meta);

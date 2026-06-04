@@ -13,22 +13,70 @@ Two observation points at two elevations:
 | POW-O-METER | top of hill | 1150 m | 54.49837, -128.96421 |
 | Avalanche Canada / DriveBC #58 | bottom of hill | 740 m | 54.48497, -128.95586 |
 
-## Status — Phase 0 (the time-critical logger)
+## Status
 
-Forecast runs and webcam frames **cannot be recovered retroactively**, so the
-logger and webcam grabber are built first and run on a schedule from day one.
+- **Phase 0 — loggers (done, live).** Forecast runs and webcam frames *cannot be
+  recovered retroactively*, so these run on a schedule from day one.
+  - **Forecast logger** — pulls 7 deterministic models from Open-Meteo for both
+    points and appends to a Parquet log. `forecast-logger.yml`, every 6 h.
+  - **Webcam grabber** — captures both Shames frames to Cloudflare R2.
+    `webcam-grabber.yml`, every 30 min during daylight.
+  - **Backfill** — `scripts/backfill_previous_runs.py` bootstraps verification
+    history from Open-Meteo's Previous Runs API (GFS 2m-temp from Mar 2021;
+    other models from ~Jan 2024). 8.7 M rows logged.
+- **Phase 1 — viewer (done).** Multi-model forecasts at both elevations,
+  POW-O-METER (top) + station #58 (bottom) observations, webcams with timelapse,
+  and pan/zoom/date-range controls. Static site on GitHub Pages (`viewer.yml`).
+- **Phase 2 — verification (in progress, temperature-first).** Join the forecast
+  log to observed actuals and compute per-model error by lead time — *which
+  model wins, where, at which horizon.* See below.
 
-- **Forecast logger** — pulls 7 deterministic models from Open-Meteo for both
-  points and appends to a Parquet log. `.github/workflows/forecast-logger.yml`
-  runs every 6 h.
-- **Webcam grabber** — captures both Shames frames to Cloudflare R2.
-  `.github/workflows/webcam-grabber.yml` runs every 30 min during daylight.
-- **Backfill** — `scripts/backfill_previous_runs.py` bootstraps verification
-  history from Open-Meteo's Previous Runs API (GFS 2m-temp from Mar 2021; other
-  models from ~Jan 2024).
+See `shames-weather-tool-brief.md` for the full vision.
 
-Phase 1 (viewer) and Phase 2 (verification metrics + GEPS ensemble) follow once
-data accrues. See `shames-weather-tool-brief.md` for the full vision.
+## Phase 2 — forecast verification
+
+The novel part: for each `(location, model, lead day)` we compute **MAE**, **bias**
+(forecast − observed) and **RMSE** against the actuals, and surface the
+best-performing model. The viewer's *Forecast verification* section charts error
+vs. lead time and ranks the models on a leaderboard.
+
+- **`powwx/verification.py`** — pure join/metrics core. `load_forecast_log` reads
+  the committed Parquet, `align_to_observations` matches each forecast to the
+  nearest observation (`merge_asof`, ±30 min) and computes signed error + lead
+  day, and `metrics_by_lead` / `overall_metrics` aggregate.
+- **`scripts/build_verification.py`** → `viewer/data/verification.json`. Runs in
+  the viewer workflow on every deploy.
+- **Actuals by station:**
+  - POW-O-METER (top) is read straight from its Google Sheet (durable history
+    back to 2025-01-26), so the backfill is verifiable **today** — ~243 k matched
+    temperature hours.
+  - Station #58 (bottom) is logged forward by the **observation logger** below
+    (AvCan's API keeps only ~7 days, so un-logged obs are lost — same deadline
+    logic as forecasts), **and** backfilled from the PCIC/PCDS portal (below):
+    the full archive (2010→now, incl. historical wind & humidity) yields ~534 k
+    matched temperature hours over the existing forecast backfill.
+
+**PCDS historical import (bottom station).** The Pacific Climate Impacts
+Consortium [PCDS portal](https://services.pacificclimate.org/met-data-portal-pcds/app)
+serves station #58's full history (Network `MoTIe`, Native ID `52401`) — unlike
+the 7-day AvCan API. Download the station CSV, then:
+
+```sh
+python scripts/import_pcds.py ~/Downloads/pcds_data   # appends to data/observations/
+```
+
+`powwx/observations.py:parse_pcds_csv` maps the PCDS native fields to powWX
+variables. Note PCDS timestamps are **local Pacific time *with* DST**
+(`America/Vancouver`), verified to the second against the AvCan feed — a fixed
+−8 offset would be an hour wrong all summer. Re-importing is safe (duplicate
+hours collapse on read).
+
+**Observation logger** — `powwx/obs_logger.py` + `scripts/run_obs_logger.py`,
+append-only to `data/observations/obs_date=YYYY-MM-DD/*.parquet`, committed by
+`obs-logger.yml` (every 6 h). Station #58 only; POW-O-METER stays in its sheet.
+
+GEPS (Canadian ensemble) and fanning verification out to wind / precip / snow
+depth are the remaining Phase 2 work.
 
 ## Models logged
 
@@ -67,8 +115,12 @@ pip install -e ".[dev]"
 
 python scripts/verify_models.py            # check model ids still resolve
 python scripts/run_forecast_logger.py      # one logging run -> data/forecasts/
+python scripts/run_obs_logger.py           # one obs run    -> data/observations/
 python scripts/backfill_previous_runs.py --past-days 7
 python scripts/run_webcam_grabber.py       # needs R2_* env vars
+python scripts/import_pcds.py ~/Downloads/pcds_data   # backfill #58 obs from PCDS
+python scripts/build_verification.py       # metrics -> viewer/data/verification.json
+python scripts/build_viewer_data.py        # viewer JSON -> viewer/data/
 ```
 
 ## GitHub Actions secrets (webcam grabber)

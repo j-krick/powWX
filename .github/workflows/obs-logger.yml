@@ -1,0 +1,47 @@
+name: obs-logger
+
+# Append-only observation log for station #58 (bottom). Avalanche Canada's API
+# only retains ~7 days, so an un-logged observation is lost forever — same
+# deadline logic as the forecast logger. Runs every 6h (well inside the 7-day
+# window) and commits the new Parquet file. POW-O-METER (top) is NOT logged here;
+# its Google Sheet is already a durable multi-year hub read directly at build.
+on:
+  schedule:
+    - cron: "15 1,7,13,19 * * *"   # offset from the forecast logger
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: forecast-data       # shared with forecast-logger/backfill to serialise pushes
+  cancel-in-progress: false
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Run observation logger
+        run: python scripts/run_obs_logger.py
+
+      - name: Commit new observation data
+        run: |
+          git config user.name  "powwx-bot"
+          git config user.email "actions@github.com"
+          git add data/observations
+          if git diff --cached --quiet; then
+            echo "No new observation data to commit."
+          else
+            git commit -m "obs log: $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          fi

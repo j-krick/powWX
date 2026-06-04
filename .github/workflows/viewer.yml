@@ -7,9 +7,11 @@ on:
     branches: [main]
     paths:
       - "data/forecasts/**"
+      - "data/observations/**"
       - "viewer/**"
       - "powwx/**"
       - "scripts/build_viewer_data.py"
+      - "scripts/build_verification.py"
   schedule:
     - cron: "30 0,6,12,18 * * *"   # ~30 min after each forecast-logger run
   workflow_dispatch: {}
@@ -45,6 +47,9 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
         run: python scripts/build_viewer_data.py
+
+      - name: Build verification metrics
+        run: python scripts/build_verification.py
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
