@@ -132,6 +132,13 @@ function applyHashRange() {
   if (m) applyRange(new Date(m[1] + "T00:00").getTime(), new Date(m[2] + "T23:59").getTime());
 }
 
+// Hourly UTC timestamp string in the data's format ("YYYY-MM-DDTHH:00Z"), used to
+// densify a sparse series' time grid so real gaps render as breaks, not a line.
+function isoHour(ms) {
+  const d = new Date(ms), p = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:00Z`;
+}
+
 function fmtLocal(iso, opts) {
   return new Date(iso).toLocaleString(undefined,
     opts || { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -181,7 +188,14 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
   const tset = new Set(node.times);
   if (ov) ov.times.forEach((t) => tset.add(t));
   if (blend) blend.times.forEach((t) => tset.add(t));
-  if (fle) fle.times.forEach((t) => tset.add(t));
+  if (fle) {
+    // Densify the FL grid to every hour across its span, so the hours it skips
+    // (inversion / too-uncertain) become nulls and the line breaks there instead
+    // of drawing a misleading straight segment across the gap.
+    const a = new Date(fle.times[0]).getTime();
+    const b = new Date(fle.times[fle.times.length - 1]).getTime();
+    for (let ms = a; ms <= b; ms += 3600000) tset.add(isoHour(ms));
+  }
   const times = [...tset].sort();
   const slot = new Map(times.map((t, i) => [t, i]));
   const onGrid = (srcTimes, srcVals) => {
