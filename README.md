@@ -72,6 +72,18 @@ vs. lead time and ranks the models on a leaderboard.
   learns the quantiles on early data and verifies coverage on later data (~76–78 %
   vs the 80 % target). The live series + band are written to `blend.json`.
 - **Strictly causal** — no forecast is informed by its own outcome (see the tests).
+- **Freezing-level estimate** (`powwx/freezing_level.py`) — the 0 °C isotherm height
+  from the two stations' temperatures by lapse-rate extrapolation
+  (`H₀ = z_b + T_b·Δz/(T_b−T_t)`), with a propagated ±1σ band and a **regime flag**
+  (interp / above / below / inversion). Only the reliable *interpolation* regime
+  (0 °C between 740–1150 m) is shipped, as a white line + band on the freezing-level
+  chart (`freezing_level.json`). It's a winter/spring product — the top station is
+  off in summer. A model-vs-estimate **consistency cross-check** (interp regime,
+  day-ahead) is wired into `verification.json` but stays dormant until model
+  `freezing_level_height` (live-only; not in the Previous-Runs backfill) overlaps
+  the estimate next winter. It's framed as corroboration, not ground-truth scoring:
+  the model value is a free-atmosphere column diagnostic, the estimate a surface
+  one.
 - **Actuals by station:**
   - POW-O-METER (top) is read straight from its Google Sheet (durable history
     back to 2025-01-26), so the backfill is verifiable **today** — ~243 k matched

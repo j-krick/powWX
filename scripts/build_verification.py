@@ -31,6 +31,7 @@ import pandas as pd  # noqa: E402
 
 from powwx import blend as bl  # noqa: E402
 from powwx import config as cfg  # noqa: E402
+from powwx import freezing_level as fl  # noqa: E402
 from powwx import obs_logger  # noqa: E402
 from powwx import observations as obs  # noqa: E402
 from powwx import verification as ver  # noqa: E402
@@ -39,6 +40,10 @@ from powwx import verification as ver  # noqa: E402
 VARIABLES = ["temperature_2m"]
 MIN_N = 20  # drop (model, lead_day) cells with fewer matched pairs than this
 TOLERANCE_MINUTES = 30
+FL_PRODUCT_DAYS = 150               # recent window of observed FL estimate to ship
+FL_MAX_HALFWIDTH_M = 500            # drop estimates whose ±band is wider than this
+                                    # (weak vertical gradient -> uselessly uncertain)
+FL_MODELS = ["gfs_seamless", "icon_global"]  # the only models with freezing_level_height
 
 
 def _obs_records(location: str, variable: str) -> list[dict]:
@@ -118,7 +123,75 @@ def _live_blend_series(fc, aligned, band_q) -> dict | None:
     }
 
 
-def build() -> tuple[dict, dict]:
+def _freezing_level_block(labels) -> tuple[dict | None, dict | None]:
+    """Two-station observed freezing-level estimate: a recent interp-regime series
+    (the product) and an interp-regime cross-check of model freezing_level_height
+    against the estimate (a consistency check, NOT ground-truth verification)."""
+    top = ver.observations_frame(_obs_records("pow_o_meter", "temperature_2m"))
+    bottom = ver.observations_frame(_obs_records("station_58", "temperature_2m"))
+    paired = fl.pair_stations(bottom, top)
+    if paired.empty:
+        return None, None
+    est = fl.estimate_series(paired)
+    interp = est[est["regime"] == "interp"]
+    if interp.empty:
+        return None, None
+
+    # Product: recent reliable (interp) estimate points with their ±1σ band, after
+    # dropping weak-gradient points whose band balloons past usefulness.
+    cutoff = interp["time"].max() - pd.Timedelta(days=FL_PRODUCT_DAYS)
+    recent = interp[(interp["time"] >= cutoff)
+                    & ((interp["upper"] - interp["lower"]) / 2 <= FL_MAX_HALFWIDTH_M)
+                    ].sort_values("time")
+    if recent.empty:
+        return None, None
+    product = {
+        "z_bottom": fl.Z_BOTTOM, "z_top": fl.Z_TOP,
+        "times": [t.strftime("%Y-%m-%dT%H:%MZ") for t in recent["time"]],
+        "h0": [round(float(v)) for v in recent["h0"]],
+        "lower": [round(float(v)) for v in recent["lower"]],
+        "upper": [round(float(v)) for v in recent["upper"]],
+    }
+
+    # Cross-check: day-ahead model freezing_level_height vs the observed estimate,
+    # interp regime only. Both are "freezing level" but different quantities, so
+    # this is corroboration, not accuracy scoring.
+    crosscheck = None
+    fc = ver.load_forecast_log(cfg.DATA_DIR, variable="freezing_level_height", location="pow_o_meter")
+    if not fc.empty:
+        fc = fc.copy()
+        fc["lead_day"] = ((fc["valid_time"] - fc["issued_at"]).dt.total_seconds() / 86400.0).round()
+        fc1 = fc[fc["lead_day"] == 1]
+        obs_h0 = interp[["time", "h0"]].sort_values("time")
+        rows = []
+        for mid, g in fc1.groupby("model"):
+            if mid not in FL_MODELS:
+                continue
+            m = pd.merge_asof(g.sort_values("valid_time"), obs_h0, left_on="valid_time",
+                              right_on="time", direction="nearest",
+                              tolerance=pd.Timedelta(minutes=TOLERANCE_MINUTES)).dropna(subset=["h0"])
+            if len(m) < 30:
+                continue
+            err = m["value"] - m["h0"]
+            rows.append({"model": mid, "label": labels.get(mid, mid),
+                         "mae": round(float(err.abs().mean())), "bias": round(float(err.mean())),
+                         "n": int(len(m))})
+        if rows:
+            crosscheck = {
+                "lead_day": 1,
+                "n_interp_hours": int(len(interp)),
+                "period": {"start": interp["time"].min().strftime("%Y-%m-%dT%H:%MZ"),
+                           "end": interp["time"].max().strftime("%Y-%m-%dT%H:%MZ")},
+                "models": sorted(rows, key=lambda r: r["mae"]),
+                "note": "Consistency cross-check (interpolation regime, day-ahead): model "
+                        "freezing_level_height (a free-atmosphere column diagnostic) vs the "
+                        "station-derived surface estimate — related but not identical "
+                        "quantities, so this is corroboration, not ground-truth verification.",
+            }
+    return product, crosscheck
+
+
+def build() -> tuple[dict, dict, dict]:
     models_cfg = cfg.load_models()
     locations = cfg.load_locations()
     labels = {m["id"]: m["label"] for m in models_cfg["models"]}
@@ -229,10 +302,13 @@ def build() -> tuple[dict, dict]:
                 "variables": per_var,
             }
 
+    fl_product, fl_crosscheck = _freezing_level_block(labels)
+
     payload = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
         "tolerance_minutes": TOLERANCE_MINUTES,
         "min_n": MIN_N,
+        "freezing_level": fl_crosscheck,
         "units": {"temperature_2m": "°C"},
         "var_labels": {"temperature_2m": "Temperature"},
         "models": ([{"id": m["id"], "label": labels[m["id"]]} for m in models_cfg["models"]]
@@ -256,18 +332,31 @@ def build() -> tuple[dict, dict]:
                 f"coefficients from the trailing {bl.WINDOW_DAYS} days.",
         "locations": blend_live_locs,
     }
-    return payload, blend_payload
+    fl_payload = {
+        "generated_at": payload["generated_at"],
+        "units": "m",
+        "t_sigma_c": fl.T_SIGMA,
+        "note": "Observed freezing level estimated from the two stations' temperatures "
+                "(lapse-rate extrapolation), interpolation regime only (0 °C between "
+                f"{int(fl.Z_BOTTOM)} and {int(fl.Z_TOP)} m). Band is ±1σ. Top station is "
+                "off in summer, so this is a winter/spring product.",
+        "estimate": fl_product,
+    }
+    return payload, blend_payload, fl_payload
 
 
 def main() -> int:
     out_dir = cfg.REPO_ROOT / "viewer" / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
-    payload, blend_payload = build()
+    payload, blend_payload, fl_payload = build()
     (out_dir / "verification.json").write_text(
         json.dumps(payload, separators=(",", ":")), encoding="utf-8"
     )
     (out_dir / "blend.json").write_text(
         json.dumps(blend_payload, separators=(",", ":")), encoding="utf-8"
+    )
+    (out_dir / "freezing_level.json").write_text(
+        json.dumps(fl_payload, separators=(",", ":")), encoding="utf-8"
     )
 
     summary = {

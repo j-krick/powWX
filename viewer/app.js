@@ -125,6 +125,13 @@ function buildRangeControls() {
   reflectRange();
 }
 
+// Optional deep link: #2026-04-01..2026-05-25 sets the initial time window
+// (shareable range links; also how the past-only obs/FL overlays are reached).
+function applyHashRange() {
+  const m = (location.hash || "").match(/(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})/);
+  if (m) applyRange(new Date(m[1] + "T00:00").getTime(), new Date(m[2] + "T23:59").getTime());
+}
+
 function fmtLocal(iso, opts) {
   return new Date(iso).toLocaleString(undefined,
     opts || { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -157,12 +164,15 @@ function aggregate(values, type) {
 
 const COMPASS = { 0: "N", 90: "E", 180: "S", 270: "W", 360: "N" };
 
-function makeChart(canvas, loc, vcfg, fc, obs, blendLoc) {
+function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
   const node = fc.forecast[loc][vcfg.key];
   const scatter = !!vcfg.scatter; // wind direction: points, not a wrapping line
   const ov = obs[loc] && obs[loc][vcfg.key];
   // The powWX blend is a temperature-only product (for now).
   const blend = vcfg.key === "temperature_2m" ? blendLoc : null;
+  // Observed freezing-level estimate (from the two stations) overlays the FL panel.
+  const fle = (vcfg.key === "freezing_level_height" && flEst && flEst.times
+               && flEst.times.length) ? flEst : null;
 
   // Unified time axis: model series (-12h..+7d) and observations (past only) sit
   // on different grids, so build one sorted set of all timestamps and align every
@@ -171,6 +181,7 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc) {
   const tset = new Set(node.times);
   if (ov) ov.times.forEach((t) => tset.add(t));
   if (blend) blend.times.forEach((t) => tset.add(t));
+  if (fle) fle.times.forEach((t) => tset.add(t));
   const times = [...tset].sort();
   const slot = new Map(times.map((t, i) => [t, i]));
   const onGrid = (srcTimes, srcVals) => {
@@ -221,6 +232,27 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc) {
       data: onGrid(blend.times, blend.values),
       borderColor: MODEL_COLORS.powwx_blend, backgroundColor: MODEL_COLORS.powwx_blend,
       borderWidth: 3, tension: 0.25, pointRadius: 0, spanGaps: false, order: -2,
+    });
+  }
+  // Observed freezing-level estimate from the two stations (interp regime only):
+  // a white line with a ±1σ band, shown in the past where both stations report.
+  if (fle) {
+    datasets.push({
+      label: "FL est upper", modelId: "__flest__", isBand: true,
+      data: onGrid(fle.times, fle.upper),
+      borderWidth: 0, pointRadius: 0, fill: false, tension: 0.2, spanGaps: false, order: 6,
+    });
+    datasets.push({
+      label: "FL est lower", modelId: "__flest__", isBand: true,
+      data: onGrid(fle.times, fle.lower),
+      borderWidth: 0, pointRadius: 0, fill: "-1",
+      backgroundColor: "rgba(255,255,255,0.12)", tension: 0.2, spanGaps: false, order: 6,
+    });
+    datasets.push({
+      label: "Freezing level (obs. est.)", modelId: "__flest__",
+      data: onGrid(fle.times, fle.h0),
+      borderColor: "#ffffff", backgroundColor: "#ffffff",
+      borderWidth: 2, pointRadius: 0, tension: 0.2, spanGaps: false, order: -1,
     });
   }
   // Freezing level: a dashed reference line at this station's elevation, so you
@@ -324,10 +356,12 @@ function makeTable(loc, vcfg, fc) {
   return wrap;
 }
 
-function buildForecast(fc, obs, blend) {
+function buildForecast(fc, obs, blend, flEst) {
   const root = document.getElementById("forecast");
   root.innerHTML = "";
   const blendLocs = (blend && blend.locations) || {};
+  const fle = (flEst && flEst.estimate && flEst.estimate.times
+               && flEst.estimate.times.length) ? flEst.estimate : null;
   const locIds = Object.keys(fc.locations).sort(
     (a, b) => fc.locations[b].elevation_m - fc.locations[a].elevation_m);
 
@@ -349,6 +383,7 @@ function buildForecast(fc, obs, blend) {
       `<span class="leg" data-model="${m.id}"><i style="background:${MODEL_COLORS[m.id] || "#888"}"></i>${m.label}</span>`).join("");
     if (obs[loc]) legend.innerHTML += `<span class="leg" data-model="__observed__"><i style="background:${OBS_COLOR}"></i>Observed</span>`;
     if (blendLoc) legend.innerHTML += `<span class="leg blend-leg" data-model="powwx_blend"><i style="background:${MODEL_COLORS.powwx_blend}"></i>powWX blend</span>`;
+    if (fle && fc.forecast[loc] && fc.forecast[loc].freezing_level_height) legend.innerHTML += `<span class="leg" data-model="__flest__"><i style="background:#ffffff"></i>Freezing level (obs. est.)</span>`;
     block.appendChild(legend);
 
     const locCharts = [];
@@ -366,7 +401,7 @@ function buildForecast(fc, obs, blend) {
       panel.appendChild(cw);
       panel.appendChild(makeTable(loc, vcfg, fc));
       grid.appendChild(panel);
-      locCharts.push(makeChart(canvas, loc, vcfg, fc, obs, blendLoc));
+      locCharts.push(makeChart(canvas, loc, vcfg, fc, obs, blendLoc, fle));
     }
     block.appendChild(grid);
 
@@ -836,10 +871,11 @@ async function main() {
   try {
     const [fc, obs, webcams, meta] = await Promise.all(
       ["forecast", "observations", "webcams", "meta"].map(loadJSON));
-    // Blend is optional — tolerate its absence so the viewer still renders.
-    let blend = null;
+    // Blend and freezing-level estimate are optional — tolerate their absence.
+    let blend = null, flEst = null;
     try { blend = await loadJSON("blend"); } catch (e) { console.warn("blend skipped:", e.message); }
-    buildForecast(fc, obs, blend);
+    try { flEst = await loadJSON("freezing_level"); } catch (e) { console.warn("freezing_level skipped:", e.message); }
+    buildForecast(fc, obs, blend, flEst);
     // Verification is optional: tolerate its absence so the rest of the viewer
     // still renders if verification.json hasn't been generated yet.
     try {
@@ -854,6 +890,8 @@ async function main() {
     setStatus(fc, obs, meta);
     wireToggle();
     buildRangeControls();
+    applyHashRange();
+    window.addEventListener("hashchange", applyHashRange);
   } catch (e) {
     document.getElementById("status").textContent = `Failed to load data: ${e.message}`;
     console.error(e);
