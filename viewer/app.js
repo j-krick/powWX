@@ -237,6 +237,10 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
   // Observed freezing-level estimate from the two stations (interp regime only):
   // a white line with a ±1σ band, shown in the past where both stations report.
   if (fle) {
+    // Regime per chart slot, so extrapolated (above/below) segments draw dashed
+    // and the reliable interpolation regime draws solid.
+    const flReg = new Map(fle.times.map((t, i) => [t, (fle.regime || [])[i]]));
+    const ptReg = times.map((t) => flReg.get(t) ?? null);
     datasets.push({
       label: "FL est upper", modelId: "__flest__", isBand: true,
       data: onGrid(fle.times, fle.upper),
@@ -253,6 +257,12 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
       data: onGrid(fle.times, fle.h0),
       borderColor: "#ffffff", backgroundColor: "#ffffff",
       borderWidth: 2, pointRadius: 0, tension: 0.2, spanGaps: false, order: -1,
+      segment: {
+        borderDash: (ctx) => {
+          const r = ptReg[ctx.p1DataIndex];
+          return r && r !== "interp" ? [5, 4] : undefined;  // dashed = extrapolated
+        },
+      },
     });
   }
   // Freezing level: a dashed reference line at this station's elevation, so you
@@ -400,6 +410,14 @@ function buildForecast(fc, obs, blend, flEst) {
       cw.appendChild(canvas);
       panel.appendChild(cw);
       panel.appendChild(makeTable(loc, vcfg, fc));
+      if (vcfg.key === "freezing_level_height" && fle) {
+        const cap = document.createElement("div");
+        cap.className = "note";
+        cap.innerHTML = "White = freezing level estimated from the two stations "
+          + "(solid where 0 °C is between them, <span style=\"border-bottom:1px dashed #9fb0c3\">dashed</span> where extrapolated above/below). "
+          + "Gaps = inversion or too uncertain.";
+        panel.appendChild(cap);
+      }
       grid.appendChild(panel);
       locCharts.push(makeChart(canvas, loc, vcfg, fc, obs, blendLoc, fle));
     }

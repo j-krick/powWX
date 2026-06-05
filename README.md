@@ -75,9 +75,12 @@ vs. lead time and ranks the models on a leaderboard.
 - **Freezing-level estimate** (`powwx/freezing_level.py`) — the 0 °C isotherm height
   from the two stations' temperatures by lapse-rate extrapolation
   (`H₀ = z_b + T_b·Δz/(T_b−T_t)`), with a propagated ±1σ band and a **regime flag**
-  (interp / above / below / inversion). Only the reliable *interpolation* regime
-  (0 °C between 740–1150 m) is shipped, as a white line + band on the freezing-level
-  chart (`freezing_level.json`). It's a winter/spring product — the top station is
+  (interp / above / below / inversion). The reliable *interpolation* regime
+  (0 °C between 740–1150 m) is drawn solid; **above/below extrapolation** is drawn
+  dashed and bounded (band ≤ ±500 m *and* a hard distance cap of +700 m / −500 m
+  beyond the stations, since the band models only measurement noise, not the lapse
+  rate changing with height). Inversions stay gaps. Shipped in
+  `freezing_level.json` (with a per-point regime). It's a winter/spring product — the top station is
   off in summer. A model-vs-estimate **consistency cross-check** (interp regime,
   day-ahead) is wired into `verification.json` but stays dormant until model
   `freezing_level_height` (live-only; not in the Previous-Runs backfill) overlaps

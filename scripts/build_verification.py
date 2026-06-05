@@ -43,6 +43,11 @@ TOLERANCE_MINUTES = 30
 FL_PRODUCT_DAYS = 150               # recent window of observed FL estimate to ship
 FL_MAX_HALFWIDTH_M = 500            # drop estimates whose ±band is wider than this
                                     # (weak vertical gradient -> uselessly uncertain)
+# Hard caps on how far we extrapolate beyond the stations. The ±band only models
+# measurement noise, not the lapse rate changing with height, so a long
+# extrapolation can pass the band filter yet still be shaky — cap it independently.
+FL_EXTRAP_ABOVE_M = 700             # max metres above the top station (1150 m)
+FL_EXTRAP_BELOW_M = 500             # max metres below the bottom station (740 m)
 FL_MODELS = ["gfs_seamless", "icon_global"]  # the only models with freezing_level_height
 
 
@@ -138,21 +143,28 @@ def _freezing_level_block(labels) -> tuple[dict | None, dict | None]:
     if paired.empty:
         return None, None
     est = fl.estimate_series(paired)
-    interp = est[est["regime"] == "interp"]
-    if interp.empty:
-        return None, None
+    interp = est[est["regime"] == "interp"]  # cross-check uses interp only
 
-    # Product: recent reliable (interp) estimate points with their ±1σ band, after
-    # dropping weak-gradient points whose band balloons past usefulness.
-    cutoff = interp["time"].max() - pd.Timedelta(days=FL_PRODUCT_DAYS)
-    recent = interp[(interp["time"] >= cutoff)
-                    & ((interp["upper"] - interp["lower"]) / 2 <= FL_MAX_HALFWIDTH_M)
-                    ].sort_values("time").copy()
-    if recent.empty:
-        return None, None
+    # Product: interp (reliable) plus bounded above/below extrapolation. Two guards:
+    # the ±band width AND a hard distance cap (the band doesn't see lapse-rate change
+    # with height). Inversions can't be linearly extrapolated, so they stay gaps.
+    halfwidth = (est["upper"] - est["lower"]) / 2
+    shown = est[
+        (halfwidth <= FL_MAX_HALFWIDTH_M)
+        & (
+            (est["regime"] == "interp")
+            | ((est["regime"] == "above") & (est["h0"] <= fl.Z_TOP + FL_EXTRAP_ABOVE_M))
+            | ((est["regime"] == "below") & (est["h0"] >= fl.Z_BOTTOM - FL_EXTRAP_BELOW_M))
+        )
+    ]
+    if shown.empty:
+        return None, (None if interp.empty else _fl_crosscheck(interp, labels))
+
+    cutoff = shown["time"].max() - pd.Timedelta(days=FL_PRODUCT_DAYS)
+    recent = shown[shown["time"] >= cutoff].sort_values("time").copy()
     # Even perfectly time-aligned, H₀ amplifies temperature noise (it divides by the
     # small top–bottom gradient). Apply a gentle 3 h rolling median, but only WITHIN
-    # contiguous hourly runs so it never smooths across gaps between interp episodes.
+    # contiguous hourly runs so it never smooths across the gaps between episodes.
     run = (recent["time"].diff() > pd.Timedelta(hours=1, minutes=1)).cumsum()
     for col in ("h0", "lower", "upper"):
         recent[col] = recent.groupby(run)[col].transform(
@@ -163,44 +175,50 @@ def _freezing_level_block(labels) -> tuple[dict | None, dict | None]:
         "h0": [round(float(v)) for v in recent["h0"]],
         "lower": [round(float(v)) for v in recent["lower"]],
         "upper": [round(float(v)) for v in recent["upper"]],
+        "regime": list(recent["regime"]),   # 'interp' solid vs 'above'/'below' dashed
     }
 
-    # Cross-check: day-ahead model freezing_level_height vs the observed estimate,
-    # interp regime only. Both are "freezing level" but different quantities, so
-    # this is corroboration, not accuracy scoring.
-    crosscheck = None
-    fc = ver.load_forecast_log(cfg.DATA_DIR, variable="freezing_level_height", location="pow_o_meter")
-    if not fc.empty:
-        fc = fc.copy()
-        fc["lead_day"] = ((fc["valid_time"] - fc["issued_at"]).dt.total_seconds() / 86400.0).round()
-        fc1 = fc[fc["lead_day"] == 1]
-        obs_h0 = interp[["time", "h0"]].sort_values("time")
-        rows = []
-        for mid, g in fc1.groupby("model"):
-            if mid not in FL_MODELS:
-                continue
-            m = pd.merge_asof(g.sort_values("valid_time"), obs_h0, left_on="valid_time",
-                              right_on="time", direction="nearest",
-                              tolerance=pd.Timedelta(minutes=TOLERANCE_MINUTES)).dropna(subset=["h0"])
-            if len(m) < 30:
-                continue
-            err = m["value"] - m["h0"]
-            rows.append({"model": mid, "label": labels.get(mid, mid),
-                         "mae": round(float(err.abs().mean())), "bias": round(float(err.mean())),
-                         "n": int(len(m))})
-        if rows:
-            crosscheck = {
-                "lead_day": 1,
-                "n_interp_hours": int(len(interp)),
-                "period": {"start": interp["time"].min().strftime("%Y-%m-%dT%H:%MZ"),
-                           "end": interp["time"].max().strftime("%Y-%m-%dT%H:%MZ")},
-                "models": sorted(rows, key=lambda r: r["mae"]),
-                "note": "Consistency cross-check (interpolation regime, day-ahead): model "
-                        "freezing_level_height (a free-atmosphere column diagnostic) vs the "
-                        "station-derived surface estimate — related but not identical "
-                        "quantities, so this is corroboration, not ground-truth verification.",
-            }
+    crosscheck = None if interp.empty else _fl_crosscheck(interp, labels)
     return product, crosscheck
+
+
+def _fl_crosscheck(interp, labels) -> dict | None:
+    """Day-ahead model freezing_level_height vs the observed estimate, interp regime
+    only. Both are 'freezing level' but different quantities — corroboration, not
+    accuracy scoring."""
+    fc = ver.load_forecast_log(cfg.DATA_DIR, variable="freezing_level_height", location="pow_o_meter")
+    if fc.empty:
+        return None
+    fc = fc.copy()
+    fc["lead_day"] = ((fc["valid_time"] - fc["issued_at"]).dt.total_seconds() / 86400.0).round()
+    fc1 = fc[fc["lead_day"] == 1]
+    obs_h0 = interp[["time", "h0"]].sort_values("time")
+    rows = []
+    for mid, g in fc1.groupby("model"):
+        if mid not in FL_MODELS:
+            continue
+        m = pd.merge_asof(g.sort_values("valid_time"), obs_h0, left_on="valid_time",
+                          right_on="time", direction="nearest",
+                          tolerance=pd.Timedelta(minutes=TOLERANCE_MINUTES)).dropna(subset=["h0"])
+        if len(m) < 30:
+            continue
+        err = m["value"] - m["h0"]
+        rows.append({"model": mid, "label": labels.get(mid, mid),
+                     "mae": round(float(err.abs().mean())), "bias": round(float(err.mean())),
+                     "n": int(len(m))})
+    if not rows:
+        return None
+    return {
+        "lead_day": 1,
+        "n_interp_hours": int(len(interp)),
+        "period": {"start": interp["time"].min().strftime("%Y-%m-%dT%H:%MZ"),
+                   "end": interp["time"].max().strftime("%Y-%m-%dT%H:%MZ")},
+        "models": sorted(rows, key=lambda r: r["mae"]),
+        "note": "Consistency cross-check (interpolation regime, day-ahead): model "
+                "freezing_level_height (a free-atmosphere column diagnostic) vs the "
+                "station-derived surface estimate — related but not identical "
+                "quantities, so this is corroboration, not ground-truth verification.",
+    }
 
 
 def build() -> tuple[dict, dict, dict]:
