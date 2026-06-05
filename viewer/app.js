@@ -200,8 +200,22 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc) {
       spanGaps: false, showLine: !scatter, order: -1,
     });
   }
-  // powWX blend: bias-corrected, skill-weighted consensus — bold gold line on top.
+  // powWX blend: bias-corrected, skill-weighted consensus. Translucent gold
+  // uncertainty band (upper+lower, filled between) under a bold gold line.
   if (blend) {
+    if (blend.upper && blend.lower) {
+      datasets.push({
+        label: "blend upper", modelId: "powwx_blend", isBand: true,
+        data: onGrid(blend.times, blend.upper),
+        borderWidth: 0, pointRadius: 0, fill: false, tension: 0.25, spanGaps: false, order: 5,
+      });
+      datasets.push({
+        label: "blend lower", modelId: "powwx_blend", isBand: true,
+        data: onGrid(blend.times, blend.lower),
+        borderWidth: 0, pointRadius: 0, fill: "-1",            // fill to the upper line
+        backgroundColor: "rgba(255,204,51,0.15)", tension: 0.25, spanGaps: false, order: 5,
+      });
+    }
     datasets.push({
       label: "powWX blend", modelId: "powwx_blend",
       data: onGrid(blend.times, blend.values),
@@ -246,8 +260,9 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc) {
         legend: { display: false },
         tooltip: {
           titleFont: { size: 11 }, bodyFont: { size: 11 },
-          // Drop the elevation reference line and gap-filled nulls from the tooltip.
-          filter: (item) => item.dataset.modelId !== "__ref__" && item.parsed.y !== null,
+          // Drop the elevation reference line, band edges, and gap-filled nulls.
+          filter: (item) => item.dataset.modelId !== "__ref__"
+            && !item.dataset.isBand && item.parsed.y !== null,
           callbacks: vcfg.degrees
             ? { label: (c) => `${c.dataset.label}: ${Math.round(c.parsed.y)}°` }
             : {},
@@ -660,9 +675,12 @@ function buildVerification(ver) {
           : `is within <strong>${Math.abs(bd.improvement_pct)}%</strong> of the best single model (${rawLabel}) overall — and leads through the mid-range (see the chart)`;
         const bc = document.createElement("div");
         bc.className = "blend-callout";
+        const band = (bd.band_coverage_oos != null)
+          ? ` Its ${Math.round(bd.band_level * 100)}% range covers <strong>${Math.round(bd.band_coverage_oos * 100)}%</strong> of outcomes out-of-sample.`
+          : "";
         bc.innerHTML =
           `<p>⚙️ <strong style="color:${MODEL_COLORS.powwx_blend}">powWX blend</strong> — bias-corrected, skill-weighted consensus, judged <em>out-of-sample</em> — ${verdict}. ` +
-          `MAE <strong>${bd.overall.mae} ${unit}</strong> (bias ${bd.overall.bias >= 0 ? "+" : ""}${bd.overall.bias}).</p>`;
+          `MAE <strong>${bd.overall.mae} ${unit}</strong> (bias ${bd.overall.bias >= 0 ? "+" : ""}${bd.overall.bias}).${band}</p>`;
         block.appendChild(bc);
       }
 

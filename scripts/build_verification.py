@@ -89,9 +89,10 @@ def _blend_summary(overall, by_lead, best_raw) -> dict | None:
     }
 
 
-def _live_blend_series(fc, aligned) -> dict | None:
+def _live_blend_series(fc, aligned, band_q) -> dict | None:
     """Forward blend for the latest live run: learn coefficients as of now from the
-    matched pairs, apply to the most recent live forecast. Returns times/values."""
+    matched pairs, apply to the most recent live forecast, and wrap each point in
+    the per-lead uncertainty band. Returns times / values / lower / upper."""
     live = fc[fc["source"] == "live"]
     if live.empty or aligned.empty:
         return None
@@ -103,10 +104,17 @@ def _live_blend_series(fc, aligned) -> dict | None:
     series = bl.live_blend(run[["model", "valid_time", "value", "lead_day"]], coef)
     if series.empty:
         return None
+    lower, upper = [], []
+    for _, r in series.iterrows():
+        q = band_q.get(int(r["lead_day"]))
+        lower.append(round(float(r["value"] + q[0]), 2) if q else None)
+        upper.append(round(float(r["value"] + q[1]), 2) if q else None)
     return {
         "issued_at": latest.strftime("%Y-%m-%dT%H:%MZ"),
         "times": [t.strftime("%Y-%m-%dT%H:%MZ") for t in series["valid_time"]],
         "values": [round(float(v), 2) for v in series["value"]],
+        "lower": lower,
+        "upper": upper,
     }
 
 
@@ -149,6 +157,10 @@ def build() -> tuple[dict, dict]:
             best = ver.best_by_lead(ver.metrics_by_lead(aligned, min_n=MIN_N))
 
             blend_summary = _blend_summary(overall, by_lead, best)
+            band_q = bl.residual_quantiles(blend_pairs)
+            if blend_summary is not None:
+                blend_summary["band_level"] = bl.BAND_LEVEL
+                blend_summary["band_coverage_oos"] = bl.band_coverage_oos(blend_pairs)
 
             # Conditional verification: does the ranking change by regime? Computed
             # day-ahead (lead day 1) so models with different horizons compare fairly.
@@ -203,7 +215,7 @@ def build() -> tuple[dict, dict]:
                 "strata": strata,
             }
 
-            live = _live_blend_series(fc, aligned)
+            live = _live_blend_series(fc, aligned, band_q)
             if live is not None:
                 blend_live_locs.setdefault(lid, {})[variable] = live
 

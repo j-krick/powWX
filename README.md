@@ -54,16 +54,24 @@ vs. lead time and ranks the models on a leaderboard.
 - **`scripts/build_verification.py`** → `viewer/data/verification.json`. Runs in
   the viewer workflow on every deploy.
 - **powWX blend** (`powwx/blend.py`) — our own composed temperature forecast: each
-  model's per-lead **bias is removed** and the models are combined **inverse-MAE
-  weighted** (a bias-corrected consensus, à la NWS National Blend of Models /
-  Krishnamurti superensemble). Coefficients are learned from a trailing 90-day
-  window; the blend is evaluated **walk-forward (out-of-sample)** — retrained each
-  month on only prior data — and added to the leaderboard as `powwx_blend` so the
-  "does it beat the best single model?" question is answered honestly. It does at
-  the top (≈ +3 % MAE) and through the 1–5-day range at the bottom. The live
-  blended series is written to `blend.json` and shown as a bold gold line in the
-  temperature chart. **Strictly causal** — no forecast is informed by its own
-  outcome (see the tests).
+  model's **bias is removed** and the models are combined **weighted by skill**
+  (`w ∝ 1/MAE²`), with coefficients learned per `(model, lead_day, time-of-day)`
+  — a bias-corrected consensus à la NWS National Blend of Models / Krishnamurti
+  superensemble. Time-of-day is the regime to condition on (it's known at forecast
+  time and well sampled in any window; *season* isn't — a 90-day window is almost
+  one season). The weighting scheme was picked by a walk-forward sweep
+  (`scripts/exp_blend_weighting.py`); notably "just use the best model" was far
+  worse (−18 % at the bottom) — error cancellation matters.
+- Coefficients use a trailing 90-day window; the blend is evaluated **walk-forward
+  (out-of-sample)** — retrained monthly on only prior data — and added to the
+  leaderboard as `powwx_blend`. It **beats the best single model at both stations**
+  (top ≈ +7.5 %, bottom ≈ +1.5 % MAE).
+- **Uncertainty band** — the live blend carries an 80 % range from the empirical
+  per-lead distribution of its own out-of-sample errors (shown as a gold ribbon
+  that widens with lead time). It's calibration-checked: `band_coverage_oos`
+  learns the quantiles on early data and verifies coverage on later data (~76–78 %
+  vs the 80 % target). The live series + band are written to `blend.json`.
+- **Strictly causal** — no forecast is informed by its own outcome (see the tests).
 - **Actuals by station:**
   - POW-O-METER (top) is read straight from its Google Sheet (durable history
     back to 2025-01-26), so the backfill is verifiable **today** — ~243 k matched
