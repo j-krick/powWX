@@ -153,6 +153,51 @@ def fetch_pow_o_meter_default() -> list[dict]:
     )
 
 
+def resample_hourly_long(records: list[dict], *, max_gap_minutes: int = 90) -> list[dict]:
+    """Snap an irregular long obs series onto the exact hourly grid by linear
+    time-interpolation, per (location, variable).
+
+    The POW-O-METER reports about every 67 minutes, so its timestamps drift
+    through the clock and almost never land on the hour — which misaligns it
+    against the on-the-hour forecasts and the bottom station (adding noise to the
+    freezing-level estimate and the top-station verification). Interpolating to
+    the hour fixes that at the source. A grid hour is kept only if a real
+    observation lies within ``max_gap_minutes`` (so we never interpolate across a
+    real transmission outage). Other fields (source, etc.) are not preserved.
+    """
+    if not records:
+        return records
+    import pandas as pd
+
+    df = pd.DataFrame.from_records(records)
+    df["t"] = pd.to_datetime(df["time"], utc=True)
+    out: list[dict] = []
+    for (loc, variable), g in df.groupby(["location", "variable"]):
+        s = g.set_index("t")["value"].sort_index()
+        s = s[~s.index.duplicated(keep="last")]
+        if len(s) < 2:
+            continue
+        grid = pd.date_range(s.index.min().ceil("h"), s.index.max().floor("h"), freq="h")
+        if len(grid) == 0:
+            continue
+        # Interpolate onto the union of real + grid times, then read the grid.
+        union = s.reindex(s.index.union(grid)).interpolate(method="time")
+        vals = union.reindex(grid)
+        # Drop grid hours with no real observation within max_gap (real outages).
+        real = pd.Series(s.index, index=s.index)
+        prev = real.reindex(grid, method="ffill")
+        nxt = real.reindex(grid, method="bfill")
+        gap = pd.Timedelta(minutes=max_gap_minutes)
+        near = ((grid - prev).abs() <= gap) | ((nxt - grid).abs() <= gap)
+        for ts, v, ok in zip(grid, vals.to_numpy(), near):
+            if ok and pd.notna(v):
+                out.append({
+                    "location": loc, "variable": variable,
+                    "time": ts.strftime("%Y-%m-%dT%H:%M:%SZ"), "value": round(float(v), 3),
+                })
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # PCIC / PCDS historical import (station #58 = MoTIe native id 52401)
 # --------------------------------------------------------------------------- #

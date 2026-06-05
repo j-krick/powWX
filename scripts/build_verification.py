@@ -47,10 +47,15 @@ FL_MODELS = ["gfs_seamless", "icon_global"]  # the only models with freezing_lev
 
 
 def _obs_records(location: str, variable: str) -> list[dict]:
-    """Assemble observation records for one station+variable from its source."""
+    """Assemble observation records for one station+variable from its source.
+
+    POW-O-METER reports every ~67 min (drifting off the hour), so we snap it onto
+    the hourly grid — aligning it with the on-the-hour forecasts and bottom station
+    and de-noising both the verification match and the freezing-level estimate.
+    """
     if location == "pow_o_meter":
-        recs = obs.fetch_pow_o_meter_default()
-        return [r for r in recs if r["variable"] == variable]
+        recs = [r for r in obs.fetch_pow_o_meter_default() if r["variable"] == variable]
+        return obs.resample_hourly_long(recs)
     # Everything else: the append-only observation log (station #58 etc.).
     return obs_logger.load_observation_log(cfg.DATA_DIR, location=location, variable=variable)
 
@@ -142,9 +147,16 @@ def _freezing_level_block(labels) -> tuple[dict | None, dict | None]:
     cutoff = interp["time"].max() - pd.Timedelta(days=FL_PRODUCT_DAYS)
     recent = interp[(interp["time"] >= cutoff)
                     & ((interp["upper"] - interp["lower"]) / 2 <= FL_MAX_HALFWIDTH_M)
-                    ].sort_values("time")
+                    ].sort_values("time").copy()
     if recent.empty:
         return None, None
+    # Even perfectly time-aligned, H₀ amplifies temperature noise (it divides by the
+    # small top–bottom gradient). Apply a gentle 3 h rolling median, but only WITHIN
+    # contiguous hourly runs so it never smooths across gaps between interp episodes.
+    run = (recent["time"].diff() > pd.Timedelta(hours=1, minutes=1)).cumsum()
+    for col in ("h0", "lower", "upper"):
+        recent[col] = recent.groupby(run)[col].transform(
+            lambda x: x.rolling(3, center=True, min_periods=1).median())
     product = {
         "z_bottom": fl.Z_BOTTOM, "z_top": fl.Z_TOP,
         "times": [t.strftime("%Y-%m-%dT%H:%MZ") for t in recent["time"]],

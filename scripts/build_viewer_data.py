@@ -131,7 +131,9 @@ def build_observations() -> dict:
     # POW-O-METER (top, 1150 m) — published Google-Sheet CSV, trimmed to the window.
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=OBS_DAYS)
-        pom = obs.fetch_pow_o_meter_default()
+        # Snap to the hourly grid so the overlay lines up with the on-the-hour
+        # model series (the chart's hover assumes a shared hourly grid).
+        pom = obs.resample_hourly_long(obs.fetch_pow_o_meter_default())
         records += [r for r in pom if _to_utc(r["time"]) >= cutoff]
     except Exception as exc:  # noqa: BLE001 - obs panels are best-effort
         print(f"WARNING: POW-O-METER fetch failed: {exc}", file=sys.stderr)

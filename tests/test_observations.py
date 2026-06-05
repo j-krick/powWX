@@ -41,6 +41,25 @@ def test_pcds_units_and_clamp(tmp_path):
     assert by[("2026-01-01T08:00:00Z", "precipitation")] == 0.5
 
 
+def test_resample_hourly_interpolates_and_guards_gaps():
+    # Irregular ~67-min cadence near the hour, then a long outage.
+    recs = [
+        {"location": "pow_o_meter", "variable": "temperature_2m", "time": "2025-01-01T00:14:00Z", "value": 10.0},
+        {"location": "pow_o_meter", "variable": "temperature_2m", "time": "2025-01-01T01:21:00Z", "value": 12.0},
+        # 6-hour gap -> the hours in between must NOT be interpolated.
+        {"location": "pow_o_meter", "variable": "temperature_2m", "time": "2025-01-01T07:20:00Z", "value": 4.0},
+        {"location": "pow_o_meter", "variable": "temperature_2m", "time": "2025-01-01T08:10:00Z", "value": 3.0},
+    ]
+    out = obs.resample_hourly_long(recs, max_gap_minutes=90)
+    by_time = {r["time"]: r["value"] for r in out}
+    assert all(t.endswith(":00:00Z") for t in by_time)              # all on the hour
+    # 01:00 interpolated between 00:14 (10) and 01:21 (12): ~11.37
+    assert abs(by_time["2025-01-01T01:00:00Z"] - 11.37) < 0.05
+    # 03:00–06:00 fall in the 6 h outage -> dropped, not fabricated.
+    assert "2025-01-01T03:00:00Z" not in by_time
+    assert "2025-01-01T08:00:00Z" in by_time                        # supported again
+
+
 def test_pcds_skips_all_null_variables(tmp_path):
     recs = obs.parse_pcds_csv(_write(tmp_path))
     # rel_hum is None in every row -> no relative_humidity_2m records emitted.
