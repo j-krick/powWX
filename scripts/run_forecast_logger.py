@@ -17,6 +17,10 @@ from powwx.forecast_logger import log_forecasts  # noqa: E402
 def main() -> int:
     summary = log_forecasts()
     print(json.dumps(summary, indent=2))
+    # A partial run is still saved (and committed); flag it as an Actions
+    # warning annotation rather than failing, so the good data isn't discarded.
+    for loc_id, err in summary["failed_locations"].items():
+        print(f"::warning title=forecast logger::{loc_id} not logged this run ({err})")
     if summary["n_records"] == 0:
         print("WARNING: no records logged this run.", file=sys.stderr)
         return 1
