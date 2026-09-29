@@ -4,9 +4,18 @@ locations:
   - id: pow_o_meter
     name: POW-O-METER (top of hill)
     role: top
-    latitude: 54.49837
-    longitude: -128.96421
+    latitude: 54.49819     # 54°29'53.5"N (current site, see site_history)
+    longitude: -128.96317  # 128°57'47.4"W
     elevation_m: 1150
+    # Station moves. Snow depth is not comparable across a move (the old site
+    # was wind-affected), so split snow-depth series/verification at these
+    # dates. Temperature/RH are fine to pool: same elevation, same model grid
+    # cell (checked 2026-09-29: Open-Meteo output identical to <=0.1 degC).
+    site_history:
+      - {until: "2026-09-26T21:31:00Z", latitude: 54.49837, longitude: -128.96421,
+         note: "original site, wind-affected (scouring/loading of snow depth)"}
+      - {from: "2026-09-26T21:31:00Z", latitude: 54.49819, longitude: -128.96317,
+         note: "moved ~70 m (same elevation) to a less wind-affected spot; depth re-zeroed at install"}
     # Variables this station actually observes (used in Phase 2 verification).
     # Wind sensor may be added later -> unlocks top-of-hill wind verification.
     observed: [temperature_2m, snow_depth, relative_humidity_2m]

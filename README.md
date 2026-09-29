@@ -10,7 +10,7 @@ Two observation points at two elevations:
 
 | Station | Role | Elevation | Coords |
 |---|---|---|---|
-| POW-O-METER | top of hill | 1150 m | 54.49837, -128.96421 |
+| POW-O-METER | top of hill | 1150 m | 54.49819, -128.96317 (moved ~70 m from 54.49837, -128.96421 on 2026-09-26) |
 | Avalanche Canada / DriveBC #58 | bottom of hill | 740 m | 54.48497, -128.95586 |
 
 ## Status
