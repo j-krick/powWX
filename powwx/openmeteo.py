@@ -143,6 +143,59 @@ def parse_long(
     return records
 
 
+def parse_ensemble_long(
+    raw: dict,
+    *,
+    model_id: str,
+    variables: set[str] | list[str],
+    location_id: str,
+    issued_at: datetime,
+    fetched_at: datetime,
+    source: str = "live",
+) -> list[dict]:
+    """Unpack a single-model Ensemble API response into long records.
+
+    The response names the control ``<variable>`` and the perturbed members
+    ``<variable>_memberNN``; each becomes model ``<model_id>_memberNN`` (control =
+    ``member00``) so ensembles fit the forecast log's columns unchanged.
+    """
+    variables = set(variables)
+    hourly = raw.get("hourly", {})
+    times = hourly.get("time", [])
+    issued_iso = _iso(issued_at)
+    fetched_iso = _iso(fetched_at)
+
+    records: list[dict] = []
+    for key, series in hourly.items():
+        variable, sep, member = key.partition("_member")
+        if sep:
+            if not member.isdigit():
+                continue
+        elif key in variables:
+            member = "00"
+        else:
+            continue
+        if variable not in variables:
+            continue
+        model = f"{model_id}_member{int(member):02d}"
+        for valid_time, value in zip(times, series):
+            if value is None:
+                continue
+            records.append(
+                {
+                    "location": location_id,
+                    "model": model,
+                    "issued_at": issued_iso,
+                    "valid_time": valid_time,
+                    "variable": variable,
+                    "value": float(value),
+                    "source": source,
+                    "fetched_at": fetched_iso,
+                }
+            )
+    return records
+
+
 def _iso(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)

@@ -3,6 +3,7 @@
 Forecast log layout (committed to git by the scheduled job)::
 
     data/forecasts/issued_date=YYYY-MM-DD/run_<UTC-timestamp>.parquet
+    data/ensembles/issued_date=YYYY-MM-DD/ens_<UTC-timestamp>.parquet  (same columns)
 
 Each logging run writes ONE new file. Nothing is ever overwritten — preserving
 every (issued_at, valid_time) pair is the whole basis of verification.
@@ -36,8 +37,10 @@ def write_forecast_run(
     data_dir: Path,
     fetched_at: datetime,
     tag: str = "run",
+    subdir: str = "forecasts",
 ) -> Path | None:
-    """Write one run's records to a new partitioned Parquet file.
+    """Write one run's records to a new partitioned Parquet file under
+    ``data_dir/subdir``.
 
     Returns the file path, or ``None`` if there were no records.
     """
@@ -54,7 +57,7 @@ def write_forecast_run(
 
     issued_date = fetched_at.strftime("%Y-%m-%d")
     stamp = fetched_at.strftime("%Y%m%dT%H%M%SZ")
-    part_dir = data_dir / "forecasts" / f"issued_date={issued_date}"
+    part_dir = data_dir / subdir / f"issued_date={issued_date}"
     part_dir.mkdir(parents=True, exist_ok=True)
     out = part_dir / f"{tag}_{stamp}.parquet"
     df.to_parquet(out, engine="pyarrow", index=False, compression="zstd")

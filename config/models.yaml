@@ -56,8 +56,24 @@ models:
     resolution_km: 11
     horizon_days: 7.5
 
+# Ensembles: logged now (a live snapshot can't be fetched later), verified later.
+# Written to data/ensembles/, NOT data/forecasts/, so the members never enter the
+# deterministic leaderboard or the blend. Each member is logged as its own model
+# id, <id>_memberNN (member00 = control). Verified on the Ensemble API for
+# Shames on 2026-10-16: 21 members, 16 days, no freezing_level_height.
+ensembles:
+  url: https://ensemble-api.open-meteo.com/v1/ensemble
+  forecast_days: 16
+  variables:
+    - temperature_2m
+    - precipitation
+    - snowfall
+  models:
+    - id: gem_global_ensemble
+      label: GEPS (GEM ensemble)
+      members: 21
+
 # --- Deferred / not applicable (documented so we don't relitigate) ---
-# GEPS (Canadian ensemble): Ensemble API /v1/ensemble, up to 51 members. Phase 2.
 # HRRR: CONUS-only on Open-Meteo -> does NOT cover Shames (54.5 N). gfs_seamless
 #       runs alone here; no high-res ride-along at our latitude.
 # HRDPS 1 km West: not on Open-Meteo (needs ECCC GRIB2 pipeline). Future, not v1.
