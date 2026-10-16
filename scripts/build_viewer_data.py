@@ -53,6 +53,15 @@ LINKS = [
     {"label": "meteoblue", "url": "https://www.meteoblue.com/en/weather/week/shames-mountain"},
     {"label": "Shames co-op snow report", "url": "https://mymountaincoop.ca/shames-mountain/our-mountain/snow-report/"},
 ]
+# Data credits, each linked (Open-Meteo's licence requires the link; the
+# POW-O-METER wording is the one its LICENSE-DATA.md asks for).
+CREDITS = [
+    {"text": "Weather data by Open-Meteo.com (CC BY 4.0)", "url": "https://open-meteo.com/"},
+    {"text": "POW-O-METER data, Mount Remo Backcountry Society, CC BY 4.0",
+     "url": "https://github.com/mount-remo-backcountry-society/powOmeter"},
+    {"text": "Station #58: BC Ministry of Transportation and Infrastructure, via Avalanche Canada",
+     "url": "https://avalanche.ca/"},
+]
 
 
 def _to_utc(ts: str) -> datetime:
@@ -181,10 +190,9 @@ def main() -> int:
     meta = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
         "latest_run_issued_at": forecast.get("issued_at"),
-        "attribution": "Weather data by Open-Meteo.com (CC BY 4.0). "
-                       "Station #58 by Avalanche Canada / BC MoTI.",
+        "credits": CREDITS,
         "links": LINKS,
-        "station_note": "Observations are uncontrolled sensor data; treat as approximate.",
+        "station_note": "Observations are provisional: raw sensor data, not quality-controlled.",
     }
 
     for name, payload in [("forecast", forecast), ("observations", observations),

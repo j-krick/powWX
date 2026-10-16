@@ -405,9 +405,9 @@ function buildForecast(fc, obs, blend, flEst) {
     legend.className = "legend";
     legend.innerHTML = fc.models.map((m) =>
       `<span class="leg" data-model="${m.id}"><i style="background:${MODEL_COLORS[m.id] || "#888"}"></i>${m.label}</span>`).join("");
-    if (obs[loc]) legend.innerHTML += `<span class="leg" data-model="__observed__"><i style="background:${OBS_COLOR}"></i>Observed</span>`;
-    if (blendLoc) legend.innerHTML += `<span class="leg blend-leg" data-model="powwx_blend"><i style="background:${MODEL_COLORS.powwx_blend}"></i>powWX blend</span>`;
-    if (fle && fc.forecast[loc] && fc.forecast[loc].freezing_level_height) legend.innerHTML += `<span class="leg" data-model="__flest__"><i style="background:#ffffff"></i>Freezing level (obs. est.)</span>`;
+    if (obs[loc]) legend.innerHTML += `<span class="leg" data-model="__observed__"><i style="background:${OBS_COLOR}"></i>Observed <em class="tag">provisional</em></span>`;
+    if (blendLoc) legend.innerHTML += `<span class="leg blend-leg" data-model="powwx_blend"><i style="background:${MODEL_COLORS.powwx_blend}"></i>powWX blend <em class="tag">experimental</em></span>`;
+    if (fle && fc.forecast[loc] && fc.forecast[loc].freezing_level_height) legend.innerHTML += `<span class="leg" data-model="__flest__"><i style="background:#ffffff"></i>Freezing level (obs. est.) <em class="tag">experimental</em></span>`;
     block.appendChild(legend);
 
     const locCharts = [];
@@ -427,7 +427,7 @@ function buildForecast(fc, obs, blend, flEst) {
       if (vcfg.key === "freezing_level_height" && fle) {
         const cap = document.createElement("div");
         cap.className = "note";
-        cap.innerHTML = "White = freezing level estimated from the two stations "
+        cap.innerHTML = "<em class=\"tag\">experimental</em> White = freezing level estimated from the two stations "
           + "(solid where 0 °C is between them, <span style=\"border-bottom:1px dashed #9fb0c3\">dashed</span> where extrapolated above/below). "
           + "Gaps = inversion or too uncertain.";
         panel.appendChild(cap);
@@ -746,7 +746,7 @@ function buildVerification(ver) {
           ? ` Its ${Math.round(bd.band_level * 100)}% range covers <strong>${Math.round(bd.band_coverage_oos * 100)}%</strong> of outcomes out-of-sample.`
           : "";
         bc.innerHTML =
-          `<p>⚙️ <strong style="color:${MODEL_COLORS.powwx_blend}">powWX blend</strong> — bias-corrected, skill-weighted consensus, judged <em>out-of-sample</em> — ${verdict}. ` +
+          `<p>⚙️ <strong style="color:${MODEL_COLORS.powwx_blend}">powWX blend</strong> <em class="tag">experimental</em> — bias-corrected, skill-weighted consensus, judged <em>out-of-sample</em> — ${verdict}. ` +
           `MAE <strong>${bd.overall.mae} ${unit}</strong> (bias ${bd.overall.bias >= 0 ? "+" : ""}${bd.overall.bias}).${band}</p>`;
         block.appendChild(bc);
       }
@@ -874,13 +874,20 @@ function buildWebcams(webcams) {
 
 // ---- chrome --------------------------------------------------------------
 
+const AVALANCHE_FORECAST_URL = "https://avalanche.ca/map?lat=54.504308&lng=-128.966096";
+
 function buildFooter(meta) {
   const f = document.getElementById("footer");
-  const links = (meta.links || []).map((l) => `<a href="${l.url}" target="_blank" rel="noopener">${l.label}</a>`).join("");
+  const a = (url, text) => `<a href="${url}" target="_blank" rel="noopener">${text}</a>`;
+  const links = (meta.links || []).map((l) => a(l.url, l.label)).join("");
+  const credits = (meta.credits || []).map((c) => `<li>${a(c.url, c.text)}</li>`).join("");
   f.innerHTML =
-    `<div class="links">${links}</div>` +
-    `<p>${meta.attribution || ""}</p>` +
-    `<p class="note">${meta.station_note || ""}</p>`;
+    `<p class="disclaimer"><strong>Not a forecast.</strong> powWX is an experimental, volunteer-run ` +
+    `tool; its data may be wrong, late or missing. Do not rely on it alone for decisions in ` +
+    `avalanche terrain. Check the ${a(AVALANCHE_FORECAST_URL, "avalanche forecast at avalanche.ca")}.</p>` +
+    `<ul class="credits">${credits}</ul>` +
+    `<p class="note">${meta.station_note || ""}</p>` +
+    `<div class="links">Cross-check: ${links}</div>`;
 }
 
 // Status line: every time in BC time (labelled), with its age computed here in the

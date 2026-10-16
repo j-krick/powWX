@@ -360,8 +360,9 @@ def build() -> tuple[dict, dict, dict]:
             f"{MIN_N} matched pairs are dropped. The powWX blend is a bias-corrected, "
             "inverse-MAE-weighted consensus, validated walk-forward (out-of-sample)."
         ),
-        "attribution": "Forecasts by Open-Meteo.com (CC BY 4.0). Actuals: POW-O-METER "
-                       "(top) and Avalanche Canada / BC MoTI station #58 (bottom).",
+        "attribution": "Forecasts by Open-Meteo.com (CC BY 4.0). Actuals: POW-O-METER data, "
+                       "Mount Remo Backcountry Society, CC BY 4.0 (top) and BC MoTI station "
+                       "#58 via Avalanche Canada (bottom).",
     }
     blend_payload = {
         "generated_at": payload["generated_at"],
