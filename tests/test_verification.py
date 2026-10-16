@@ -5,6 +5,7 @@ error *sign* (forecast − observed), lead-day binning, and the aggregates.
 """
 
 import pandas as pd
+import pytest
 
 from powwx import verification as ver
 
@@ -48,6 +49,25 @@ def test_lead_day_rounds_to_nearest_whole_day():
     ])
     aligned = ver.align_to_observations(forecasts, obs, tolerance=pd.Timedelta(minutes=30))
     assert sorted(aligned["lead_day"].tolist()) == [1, 2]
+
+
+@pytest.mark.xfail(strict=True, reason="review F5 not yet fixed: negative leads round into day 0")
+def test_negative_lead_hours_do_not_land_in_lead_day_0():
+    # A live fetch at 06:00Z gets the day from 00:00Z: hours before the fetch are
+    # hindcast, not forecast, and must not be scored as same-day skill (review F5).
+    forecasts = pd.DataFrame([
+        _fc("m1", "2025-01-02T06:00:00Z", "2025-01-02T00:00:00Z", 1.0, source="live"),  # -6 h
+        _fc("m1", "2025-01-02T06:00:00Z", "2025-01-02T12:00:00Z", 1.0, source="live"),  # +6 h
+    ])
+    forecasts["issued_at"] = pd.to_datetime(forecasts["issued_at"], utc=True)
+    forecasts["valid_time"] = pd.to_datetime(forecasts["valid_time"], utc=True)
+    obs = ver.observations_frame([
+        {"time": "2025-01-02T00:00:00Z", "value": 0.0},
+        {"time": "2025-01-02T12:00:00Z", "value": 0.0},
+    ])
+    aligned = ver.align_to_observations(forecasts, obs, tolerance=pd.Timedelta(minutes=30))
+    assert (aligned["lead_hours"] >= 0).all()
+    assert aligned["lead_day"].tolist() == [0]           # only the +6 h forecast
 
 
 def test_metrics_and_best_by_lead():

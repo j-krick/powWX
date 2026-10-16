@@ -14,6 +14,7 @@ Open-Meteo forecasts so the viewer can overlay them directly:
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -26,11 +27,9 @@ REQUEST_TIMEOUT = 30
 # unit scaling. Transmissions are suspended over summer, so the series ends in
 # late May. This is the single source of truth for the POW-O-METER source config;
 # both the viewer builder and the verification builder read it from here.
-POW_O_METER_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vSt3wzU7iZgZDIyAEpbCJRxp91mo6"
-    "yzA36v_beMGgBiuqRi9JJf2ySmtE5naWVA_UKKwpWZq0s0oN3y/pub"
-    "?gid=906900269&single=true&output=csv"
-)
+# The published-sheet URL is private to MRBS, so it is never committed or logged:
+# it comes from the POW_O_METER_CSV_URL environment variable (a repo secret in CI).
+POW_O_METER_URL_ENV = "POW_O_METER_CSV_URL"
 POW_O_METER_TZ_OFFSET_HOURS = -8  # PST
 POW_O_METER_COLUMN_MAP = {
     "time": "Measurement Time (PST)",
@@ -107,8 +106,13 @@ def fetch_pow_o_meter(
     import csv
     import io
 
-    resp = requests.get(csv_url, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(csv_url, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"POW-O-METER sheet fetch failed: {type(exc).__name__}") from None
+    if not resp.ok:
+        # Not raise_for_status(): its message embeds the URL, which must stay private.
+        raise RuntimeError(f"POW-O-METER sheet returned HTTP {resp.status_code}")
     # Force UTF-8: requests guesses ISO-8859-1 for Google's CSV, which mangles
     # non-ASCII headers like "Air Temperature (°C)" so they fail to match the map.
     text = resp.content.decode("utf-8-sig")
@@ -145,9 +149,15 @@ def fetch_pow_o_meter(
 
 
 def fetch_pow_o_meter_default() -> list[dict]:
-    """Fetch the full POW-O-METER history using the module's source config."""
+    """Fetch the full POW-O-METER history using the module's source config.
+
+    Raises ``RuntimeError`` if the sheet URL isn't configured; callers treat the
+    top station as unavailable, like any other failed fetch."""
+    csv_url = os.environ.get(POW_O_METER_URL_ENV, "").strip()
+    if not csv_url:
+        raise RuntimeError(f"{POW_O_METER_URL_ENV} is not set")
     return fetch_pow_o_meter(
-        csv_url=POW_O_METER_CSV_URL,
+        csv_url=csv_url,
         column_map=POW_O_METER_COLUMN_MAP,
         source_utc_offset_hours=POW_O_METER_TZ_OFFSET_HOURS,
     )

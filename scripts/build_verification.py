@@ -136,9 +136,16 @@ def _live_blend_series(fc, aligned, band_q) -> dict | None:
 def _freezing_level_block(labels) -> tuple[dict | None, dict | None]:
     """Two-station observed freezing-level estimate: a recent interp-regime series
     (the product) and an interp-regime cross-check of model freezing_level_height
-    against the estimate (a consistency check, NOT ground-truth verification)."""
-    top = ver.observations_frame(_obs_records("pow_o_meter", "temperature_2m"))
-    bottom = ver.observations_frame(_obs_records("station_58", "temperature_2m"))
+    against the estimate (a consistency check, NOT ground-truth verification).
+
+    Needs both stations; if either can't be read the block is skipped, so a missing
+    station degrades the page instead of failing the build."""
+    try:
+        top = ver.observations_frame(_obs_records("pow_o_meter", "temperature_2m"))
+        bottom = ver.observations_frame(_obs_records("station_58", "temperature_2m"))
+    except Exception as exc:  # noqa: BLE001 - one station shouldn't sink the build
+        print(f"WARNING: freezing-level estimate skipped: {exc}", file=sys.stderr)
+        return None, None
     paired = fl.pair_stations(bottom, top)
     if paired.empty:
         return None, None
@@ -375,8 +382,8 @@ def build() -> tuple[dict, dict, dict]:
     return payload, blend_payload, fl_payload
 
 
-def main() -> int:
-    out_dir = cfg.REPO_ROOT / "viewer" / "data"
+def main(out_dir: Path | None = None) -> int:
+    out_dir = out_dir or cfg.REPO_ROOT / "viewer" / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
     payload, blend_payload, fl_payload = build()
     (out_dir / "verification.json").write_text(

@@ -883,13 +883,60 @@ function buildFooter(meta) {
     `<p class="note">${meta.station_note || ""}</p>`;
 }
 
-function setStatus(fc, obs, meta) {
-  const parts = [];
-  if (meta.latest_run_issued_at) parts.push(`forecast issued ${fmtLocal(meta.latest_run_issued_at)}`);
-  const o58 = obs.station_58 && obs.station_58.temperature_2m;
-  if (o58 && o58.times.length) parts.push(`obs to ${fmtLocal(o58.times[o58.times.length - 1])}`);
-  if (meta.generated_at) parts.push(`page built ${fmtLocal(meta.generated_at)}`);
-  document.getElementById("status").textContent = parts.join("  ·  ");
+// Status line: every time in BC time (labelled), with its age computed here in the
+// browser so a page that stopped rebuilding shows as stale instead of looking current.
+const STALE_HOURS = 12;   // same rule as the POW-O-METER station page
+const HOUR = 3600000;
+
+function fmtBC(iso) {
+  return new Date(iso).toLocaleString("en-CA", {
+    timeZone: "America/Vancouver", weekday: "short", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit" });
+}
+function fmtAge(ms) {
+  const h = ms / HOUR;
+  if (h < 1) return `${Math.max(0, Math.round(h * 60))} min ago`;
+  if (h < 48) return `${Math.round(h)} h ago`;
+  return `${Math.round(h / 24)} days ago`;
+}
+function lastObsTime(obs, lid) {
+  const latest = Object.values(obs[lid] || {})
+    .map((s) => s.times[s.times.length - 1]).filter(Boolean).sort();
+  return latest.length ? latest[latest.length - 1] : null;
+}
+
+function setStatus(fc, obs, meta, locLabels) {
+  const now = Date.now();
+  const items = [];
+  const add = (label, iso) => {
+    if (!iso) { items.push({ text: `${label}: no recent data`, stale: true }); return; }
+    const age = now - new Date(iso).getTime();
+    items.push({ text: `${label} ${fmtBC(iso)} (${fmtAge(age)})`, stale: age > STALE_HOURS * HOUR });
+  };
+  add("forecast issued", meta.latest_run_issued_at);
+  for (const lid of ["pow_o_meter", "station_58"]) {
+    add(`${(locLabels[lid] && locLabels[lid].label) || lid} obs to`, lastObsTime(obs, lid));
+  }
+  add("page built", meta.generated_at);
+
+  const el = document.getElementById("status");
+  el.replaceChildren();
+  items.forEach((it, i) => {
+    if (i) el.append("  ·  ");
+    const span = document.createElement("span");
+    span.textContent = it.text;
+    if (it.stale) span.className = "stale";
+    el.append(span);
+  });
+  el.append("  ·  BC time");
+  const stale = items.filter((it) => it.stale).length;
+  document.querySelector("header").classList.toggle("is-stale", stale > 0);
+  if (stale) {
+    const warn = document.createElement("strong");
+    warn.className = "stale-warning";
+    warn.textContent = `⚠ Some data are more than ${STALE_HOURS} h old. Check the times before relying on this page.`;
+    el.prepend(warn, document.createElement("br"));
+  }
 }
 
 function wireToggle() {
@@ -914,12 +961,14 @@ async function main() {
       buildVerification(await loadJSON("verification"));
     } catch (e) {
       console.warn("verification panel skipped:", e.message);
-      const sec = document.getElementById("verification");
-      if (sec) sec.style.display = "none";
+      const intro = document.getElementById("verification-intro");
+      if (intro) intro.textContent = "Verification is unavailable in this build of the page.";
     }
     buildWebcams(webcams);
     buildFooter(meta);
-    setStatus(fc, obs, meta);
+    setStatus(fc, obs, meta, fc.locations || {});
+    // Keep the ages honest for a page left open.
+    setInterval(() => setStatus(fc, obs, meta, fc.locations || {}), 60000);
     wireToggle();
     buildRangeControls();
     applyHashRange();

@@ -28,6 +28,9 @@ h1 { margin: 0; font-size: 1.7rem; letter-spacing: .5px; }
 h1 .snow { color: var(--accent); }
 .tagline { margin: .35rem 0 0; color: var(--ink-dim); font-size: .95rem; }
 .status { margin: .35rem 0 0; color: var(--ink-dim); font-size: .82rem; }
+.status .stale { color: #ff6b6b; font-weight: 600; }
+.status .stale-warning { color: #ff6b6b; }
+header.is-stale { border-bottom: 2px solid #ff6b6b; }
 
 .view-toggle button {
   background: var(--panel-2); color: var(--ink-dim);
