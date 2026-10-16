@@ -5,7 +5,6 @@ error *sign* (forecast − observed), lead-day binning, and the aggregates.
 """
 
 import pandas as pd
-import pytest
 
 from powwx import verification as ver
 
@@ -51,7 +50,6 @@ def test_lead_day_rounds_to_nearest_whole_day():
     assert sorted(aligned["lead_day"].tolist()) == [1, 2]
 
 
-@pytest.mark.xfail(strict=True, reason="review F5 not yet fixed: negative leads round into day 0")
 def test_negative_lead_hours_do_not_land_in_lead_day_0():
     # A live fetch at 06:00Z gets the day from 00:00Z: hours before the fetch are
     # hindcast, not forecast, and must not be scored as same-day skill (review F5).

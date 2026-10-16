@@ -137,11 +137,13 @@ def align_to_observations(
     merged["abs_error"] = merged["error"].abs()
     lead = merged["valid_time"] - merged["issued_at"]
     merged["lead_hours"] = lead.dt.total_seconds() / 3600.0
+    # Live runs return the whole day from 00:00 UTC, so hours already past at fetch
+    # time come back too. Those are hindcast, not forecast: drop them before binning
+    # so they can't round into lead day 0 ("same day").
+    merged = merged[merged["lead_hours"] >= 0].copy()
     # Round to whole days: backfill rows are exact integer-day offsets, and live
     # rows bin to the nearest day so the two stack on one lead-day axis.
     merged["lead_day"] = (merged["lead_hours"] / 24.0).round().astype(int)
-    # Guard against clock skew / valid_time before issued_at on live rows.
-    merged = merged[merged["lead_day"] >= 0]
     return merged.drop(columns=["time"]).reset_index(drop=True)
 
 

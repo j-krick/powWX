@@ -354,7 +354,9 @@ def build() -> tuple[dict, dict, dict]:
         "notes": (
             "Error = forecast − observed. MAE/bias/RMSE in the variable's units. "
             "Lead day = forecast valid time minus issue time, rounded to whole days "
-            "(backfill rows are exact integer-day offsets). Cells with < "
+            "(backfill rows are exact integer-day offsets); hours already past when a "
+            "live run was fetched are excluded, so day 0 is same-day forecasts only. "
+            "Cells with < "
             f"{MIN_N} matched pairs are dropped. The powWX blend is a bias-corrected, "
             "inverse-MAE-weighted consensus, validated walk-forward (out-of-sample)."
         ),
