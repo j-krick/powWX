@@ -22,7 +22,7 @@ locations:
     source: powometer_v1   # powOmeter's published v1 files (MRBS, CC BY 4.0)
 
   - id: station_58
-    name: DriveBC / Avalanche Canada station #58 (bottom of hill)
+    name: "DriveBC / Avalanche Canada station #58 (bottom of hill)"   # quoted: " #" starts a YAML comment
     role: bottom
     latitude: 54.484970
     longitude: -128.955860

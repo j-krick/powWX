@@ -69,33 +69,53 @@ def _round_records(df, cols, nd=2) -> list[dict]:
     return out.to_dict("records")
 
 
-def _blend_summary(overall, by_lead, best_raw) -> dict | None:
-    """Compare the blend against the best single (raw) model, overall and by lead."""
+def _comparison(c: dict) -> dict:
+    """Round a paired comparison for the JSON; ``decisive`` = more than TIE_SE
+    standard errors from zero, on enough independent days."""
+    return {"blend_mae": round(c["mae_a"], 2), "best_raw_mae": round(c["mae_b"], 2),
+            "improvement_pct": round(c["pct"], 1), "improvement_se": round(c["pct_se"], 1),
+            "n": c["n"],
+            "decisive": c["days"] >= ver.MIN_DAYS and abs(c["pct"]) > ver.TIE_SE * c["pct_se"]}
+
+
+def _blend_summary(aligned, blend_pairs, overall, winners) -> dict | None:
+    """Compare the blend with the most accurate single model *at each lead*, on
+    the forecasts both made (never pooled across different horizons, review F2)."""
     bo = overall[overall["model"] == bl.BLEND_ID]
-    raw = overall[overall["model"] != bl.BLEND_ID]
-    if bo.empty or raw.empty:
+    if bo.empty or blend_pairs.empty:
         return None
     b = bo.iloc[0]
-    best_raw_overall = raw.iloc[0]  # overall is sorted by MAE ascending
-    # Per-lead: blend MAE vs the best raw model's MAE at that lead.
-    raw_best = {int(r["lead_day"]): r["mae"] for _, r in best_raw.iterrows()}
-    blend_lead = by_lead[by_lead["model"] == bl.BLEND_ID].sort_values("lead_day")
-    per_lead = []
-    for _, r in blend_lead.iterrows():
-        ld = int(r["lead_day"])
-        per_lead.append({"lead_day": ld, "blend_mae": round(float(r["mae"]), 2),
-                         "best_raw_mae": round(float(raw_best.get(ld, float("nan"))), 2)
-                         if ld in raw_best else None})
-    impr = (best_raw_overall["mae"] - b["mae"]) / best_raw_overall["mae"] * 100.0
+    per_lead, blend_parts, raw_parts = [], [], []
+    for w in winners:
+        ld = w["lead_day"]
+        bl_ld = blend_pairs[blend_pairs["lead_day"] == ld]
+        raw_ld = aligned[(aligned["lead_day"] == ld) & (aligned["model"] == w["model"])]
+        c = ver.paired_comparison(bl_ld, raw_ld)
+        if c is None or c["n"] < MIN_N:
+            continue
+        per_lead.append({"lead_day": ld, "best_raw_model": w["model"], **_comparison(c)})
+        blend_parts.append(bl_ld)
+        raw_parts.append(raw_ld)
+    if not per_lead:
+        return None
+    # One headline over all those leads: each blend forecast against the best
+    # single model for its own lead.
+    pooled = ver.paired_comparison(pd.concat(blend_parts), pd.concat(raw_parts))
     return {
         "overall": {"mae": round(float(b["mae"]), 2), "bias": round(float(b["bias"]), 2),
                     "rmse": round(float(b["rmse"]), 2), "n": int(b["n"])},
-        "best_raw_model": best_raw_overall["model"],
-        "best_raw_mae": round(float(best_raw_overall["mae"]), 2),
-        "improvement_pct": round(float(impr), 1),
-        "beats_best_raw": bool(b["mae"] < best_raw_overall["mae"]),
+        "vs_best_by_lead": {**_comparison(pooled),
+                            "lead_days": [p["lead_day"] for p in per_lead]},
         "by_lead": per_lead,
     }
+
+
+def _winner_record(w: dict, key: str, value) -> dict:
+    """Round a :func:`ver.rank_with_ties` result for the JSON."""
+    r2 = lambda v: None if v is None else round(float(v), 2)  # noqa: E731
+    return {key: value, "model": w["model"], "mae": r2(w["mae"]), "n": w["n"],
+            "decisive": w["decisive"], "tied": w["tied"], "runner_up": w["runner_up"],
+            "margin": r2(w["margin"]), "margin_se": r2(w["margin_se"])}
 
 
 def _live_blend_series(fc, aligned, band_q) -> dict | None:
@@ -256,11 +276,11 @@ def build() -> tuple[dict, dict, dict]:
 
             by_lead = ver.metrics_by_lead(combined, min_n=MIN_N)        # incl. blend
             overall = ver.overall_metrics(combined, min_n=MIN_N)        # incl. blend
-            # best_by_lead stays RAW-only so the "which model leads" story is about
-            # the source models, not the blend that's built from them.
-            best = ver.best_by_lead(ver.metrics_by_lead(aligned, min_n=MIN_N))
+            # Winners are ranked per lead day, RAW models only, so the "which model
+            # leads" story is about the source models, not the blend built from them.
+            winners = ver.winners_by_lead(aligned, min_n=MIN_N)
 
-            blend_summary = _blend_summary(overall, by_lead, best)
+            blend_summary = _blend_summary(aligned, blend_pairs, overall, winners)
             band_q = bl.residual_quantiles(blend_pairs)
             if blend_summary is not None:
                 blend_summary["band_level"] = bl.BAND_LEVEL
@@ -283,14 +303,21 @@ def build() -> tuple[dict, dict, dict]:
                     rows = g.dropna(subset=["mae"])[[dim, "n", "mae", "bias", "rmse"]]
                     rows = rows.rename(columns={dim: "stratum"})
                     by_model[mid] = _round_records(rows, ["mae", "bias", "rmse"])
-                sbest = ver.best_by_stratum(sm, by=dim).rename(columns={dim: "stratum"})
+                fixed_lead = strat_df[strat_df["lead_day"].isin(ver.STRAT_LEAD_DAYS)]
+                best = []
+                for s in present:
+                    w = ver.rank_with_ties(fixed_lead[fixed_lead[dim] == s], min_n=MIN_N)
+                    if w is not None:
+                        best.append(_winner_record(w, "stratum", s))
+                decisive = {b["model"] for b in best if b["decisive"]}
                 strata[dim] = {
                     "label": label,
                     "order": present,
                     "lead_days": list(ver.STRAT_LEAD_DAYS),
                     "by_model": by_model,
-                    "best": _round_records(sbest[["stratum", "model", "mae", "n"]], ["mae"]),
-                    "flips": int(sbest["model"].nunique()) > 1,
+                    "best": best,
+                    # Only a flip if different models win clearly in different bins.
+                    "flips": len(decisive) > 1,
                 }
 
             # by_lead -> {model: [{lead_day, n, mae, bias, rmse}, ...]} for charting.
@@ -308,13 +335,8 @@ def build() -> tuple[dict, dict, dict]:
                     "end": aligned["valid_time"].max().strftime("%Y-%m-%dT%H:%MZ"),
                 },
                 "max_lead_day": int(by_lead["lead_day"].max()) if not by_lead.empty else 0,
-                "overall": _round_records(
-                    overall[["model", "n", "mae", "bias", "rmse"]], ["mae", "bias", "rmse"]
-                ),
                 "by_lead": by_lead_models,
-                "best_by_lead": _round_records(
-                    best[["lead_day", "model", "mae", "n"]], ["mae"]
-                ),
+                "winners_by_lead": [_winner_record(w, "lead_day", w["lead_day"]) for w in winners],
                 "blend": blend_summary,
                 "strata": strata,
             }
@@ -354,7 +376,11 @@ def build() -> tuple[dict, dict, dict]:
             "(backfill rows are exact integer-day offsets); hours already past when a "
             "live run was fetched are excluded, so day 0 is same-day forecasts only. "
             "Cells with < "
-            f"{MIN_N} matched pairs are dropped. The powWX blend is a bias-corrected, "
+            f"{MIN_N} matched pairs are dropped. Models are ranked per lead day, never "
+            "pooled across horizons, on the forecasts both made for the same hours; "
+            "uncertainty comes from resampling whole days, and a model is named most "
+            f"accurate only if it leads by more than {ver.TIE_SE:g} standard errors, "
+            "otherwise it's a tie. The powWX blend is a bias-corrected, "
             "inverse-MAE-weighted consensus, validated walk-forward (out-of-sample)."
         ),
         "attribution": "Forecasts by Open-Meteo.com (CC BY 4.0). Actuals: POW-O-METER data, "
@@ -398,9 +424,12 @@ def main(out_dir: Path | None = None) -> int:
 
     summary = {
         lid: {
-            v: {"n_pairs": d["n_pairs"], "best_overall": d["overall"][0]["model"] if d["overall"] else None,
-                "blend": (f"{d['blend']['overall']['mae']} vs best raw {d['blend']['best_raw_mae']} "
-                          f"({'+' if d['blend']['improvement_pct'] >= 0 else ''}{d['blend']['improvement_pct']}%)")
+            v: {"n_pairs": d["n_pairs"],
+                "day_ahead": next((f"{w['model']}{'' if w['decisive'] else ' (tie: ' + ', '.join(w['tied'][1:]) + ')'}"
+                                   for w in d["winners_by_lead"] if w["lead_day"] == 1), None),
+                "blend_vs_best_by_lead": (
+                    f"{d['blend']['vs_best_by_lead']['improvement_pct']:+}% "
+                    f"± {d['blend']['vs_best_by_lead']['improvement_se']}")
                 if d.get("blend") else None}
             for v, d in loc["variables"].items()
         }

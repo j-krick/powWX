@@ -465,15 +465,16 @@ const METRIC_LABELS = { mae: "Mean absolute error", bias: "Bias (forecast − ob
 function makeMetricChart(canvas, locVar, ver, metric, unit) {
   const maxLead = locVar.max_lead_day || 1;
   const xs = [];
-  for (let d = 1; d <= maxLead; d++) xs.push(d);
+  for (let d = 0; d <= maxLead; d++) xs.push(d);
 
   const datasets = ver.models
     .filter((m) => locVar.by_lead[m.id])
     .map((m) => {
-      const byDay = new Map(locVar.by_lead[m.id].map((r) => [r.lead_day, r[metric]]));
+      const byDay = new Map(locVar.by_lead[m.id].map((r) => [r.lead_day, r]));
       return {
         label: m.label, modelId: m.id,
-        data: xs.map((d) => ({ x: d, y: byDay.has(d) ? byDay.get(d) : null })),
+        data: xs.map((d) => ({ x: d, y: byDay.has(d) ? byDay.get(d)[metric] : null,
+                               n: byDay.has(d) ? byDay.get(d).n : null })),
         borderColor: MODEL_COLORS[m.id] || "#888",
         backgroundColor: MODEL_COLORS[m.id] || "#888",
         borderWidth: m.id === "powwx_blend" ? 3 : 1.6, tension: 0.2,
@@ -484,7 +485,7 @@ function makeMetricChart(canvas, locVar, ver, metric, unit) {
   if (metric === "bias") {
     datasets.push({
       label: "zero", modelId: "__zero__",
-      data: [{ x: 1, y: 0 }, { x: maxLead, y: 0 }],
+      data: [{ x: 0, y: 0 }, { x: maxLead, y: 0 }],
       borderColor: "#7d8ea0", borderWidth: 1, borderDash: [6, 4],
       pointRadius: 0, tension: 0, order: 10,
     });
@@ -502,14 +503,15 @@ function makeMetricChart(canvas, locVar, ver, metric, unit) {
           titleFont: { size: 11 }, bodyFont: { size: 11 },
           filter: (i) => i.dataset.modelId !== "__zero__" && i.parsed.y !== null,
           callbacks: {
-            title: (items) => `Lead day ${items[0].parsed.x}`,
-            label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(2)} ${unit}`,
+            title: (items) => (items[0].parsed.x === 0 ? "Same day" : `Lead day ${items[0].parsed.x}`),
+            label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(2)} ${unit}` +
+              (c.raw.n != null ? `  (n ${c.raw.n.toLocaleString()})` : ""),
           },
         },
       },
       scales: {
-        x: { type: "linear", min: 1, max: maxLead,
-             title: { display: true, text: "Lead time (days ahead)", color: "#9fb0c3" },
+        x: { type: "linear", min: 0, max: maxLead,
+             title: { display: true, text: "Lead time (days ahead; 0 = same day)", color: "#9fb0c3" },
              ticks: { color: "#9fb0c3", stepSize: 1, precision: 0 }, grid: { color: "#243246" } },
         y: { title: { display: true, text: unit, color: "#9fb0c3" },
              ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },
@@ -518,33 +520,49 @@ function makeMetricChart(canvas, locVar, ver, metric, unit) {
   });
 }
 
-function makeOverallTable(locVar, ver, unit) {
+// A ranking cell (one lead day or stratum) as text: the clear winner, or the tie.
+function winnerText(w, labels) {
+  const name = (id) => labels[id] || id;
+  if (w.decisive) return `<strong>${name(w.model)}</strong>`;
+  if (!w.runner_up) return `${name(w.model)} <span class="note">(only model)</span>`;
+  return `Tie: ${w.tied.map(name).join(", ")}`;
+}
+
+// Per-lead-day ranking: who is most accurate at each horizon, by how much (± 1
+// standard error, on shared forecasts), and how the blend compares.
+function makeLeadTable(locVar, ver, unit) {
   const labels = Object.fromEntries(ver.models.map((m) => [m.id, m.label]));
+  const blendByLead = new Map(((locVar.blend && locVar.blend.by_lead) || []).map((b) => [b.lead_day, b]));
   const wrap = document.createElement("div");
   wrap.className = "table-scroll";
   const table = document.createElement("table");
   table.className = "fc verif";
   table.innerHTML =
-    `<thead><tr><th>Model</th><th>MAE</th><th>Bias</th><th>RMSE</th><th>n</th></tr></thead>`;
+    `<thead><tr><th>Lead</th><th>Most accurate</th><th>MAE</th><th>Ahead of next by</th>` +
+    `<th>n</th><th>Blend vs it</th></tr></thead>`;
   const tbody = document.createElement("tbody");
-  locVar.overall.forEach((r, i) => {
+  for (const w of locVar.winners_by_lead) {
+    const b = blendByLead.get(w.lead_day);
+    const margin = w.margin != null ? `${w.margin.toFixed(2)} ± ${w.margin_se.toFixed(2)}` : "—";
+    const blend = b
+      ? `${b.improvement_pct > 0 ? "−" : "+"}${Math.abs(b.improvement_pct)}% ± ${b.improvement_se}%` +
+        (b.decisive ? "" : " <span class=\"note\">(tie)</span>")
+      : "—";
     const tr = document.createElement("tr");
-    const cls = [];
-    if (i === 0) cls.push("leader"); // lowest MAE
-    if (r.model === "powwx_blend") cls.push("blend-row");
-    tr.className = cls.join(" ");
-    const dot = `<i class="mdot" style="background:${MODEL_COLORS[r.model] || "#888"}"></i>`;
+    if (w.decisive) tr.className = "leader";
     tr.innerHTML =
-      `<td>${dot}${labels[r.model] || r.model}${i === 0 ? " 🏆" : ""}</td>` +
-      `<td>${r.mae.toFixed(2)}</td><td>${r.bias.toFixed(2)}</td>` +
-      `<td>${r.rmse.toFixed(2)}</td><td>${r.n.toLocaleString()}</td>`;
+      `<td>${w.lead_day === 0 ? "same day" : `day ${w.lead_day}`}</td>` +
+      `<td>${winnerText(w, labels)}</td><td>${w.mae.toFixed(2)}</td><td>${margin}</td>` +
+      `<td>${w.n.toLocaleString()}</td><td>${blend}</td>`;
     tbody.appendChild(tr);
-  });
+  }
   table.appendChild(tbody);
   wrap.appendChild(table);
   const cap = document.createElement("div");
   cap.className = "note";
-  cap.textContent = `pooled across all lead days · values in ${unit} · ranked by MAE`;
+  cap.textContent = `MAE in ${unit}. "Ahead of next by" and "Blend vs it" compare forecasts made for ` +
+    "the same hours, ± 1 standard error. A tie means the gap is within 2 standard errors. " +
+    "Blend vs it: − means the blend's error is lower.";
   wrap.appendChild(cap);
   return wrap;
 }
@@ -591,8 +609,9 @@ function makeStratChart(canvas, sd, ver, unit) {
 
 function renderStratTable(wrap, sd, ver, unit) {
   const labels = Object.fromEntries(ver.models.map((m) => [m.id, m.label]));
+  // Highlight a column's winner only where it wins clearly (not a tie).
   const winner = {};
-  sd.best.forEach((b) => { winner[b.stratum] = b.model; });
+  sd.best.forEach((b) => { if (b.decisive) winner[b.stratum] = b.model; });
   wrap.innerHTML = "";
   const table = document.createElement("table");
   table.className = "fc verif strat";
@@ -615,7 +634,8 @@ function renderStratTable(wrap, sd, ver, unit) {
   wrap.appendChild(table);
   const cap = document.createElement("div");
   cap.className = "note";
-  cap.textContent = `MAE (${unit}); lowest per column highlighted · day-ahead forecasts`;
+  cap.textContent = `MAE (${unit}); a column's winner is highlighted only where it leads by more ` +
+    "than 2 standard errors · day-ahead forecasts";
   wrap.appendChild(cap);
 }
 
@@ -669,10 +689,13 @@ function renderStrata(block, lv, ver, unit, legend, stratHolder) {
     chart.update();
     stratHolder.chart = chart;
     renderStratTable(tableWrap, sd, ver, unit);
-    const wins = sd.best.map((b) => `${b.stratum}: <strong>${labels[b.model] || b.model}</strong>`).join(" · ");
+    const wins = sd.best.map((b) => `${b.stratum}: ${winnerText(b, labels)}`).join(" · ");
+    const clear = new Set(sd.best.filter((b) => b.decisive).map((b) => b.model));
     noteEl.innerHTML = (sd.flips
       ? `🔀 The most accurate model <strong>changes</strong> by ${sd.label.toLowerCase()}. `
-      : `One model leads across every ${sd.label.toLowerCase()} bin. `) + `Winner → ${wins}`;
+      : clear.size === 1 && sd.best.every((b) => b.decisive)
+        ? `One model leads clearly in every ${sd.label.toLowerCase()} bin. `
+        : `No clear change of leader by ${sd.label.toLowerCase()}. `) + `Most accurate → ${wins}`;
   }
   tabs.querySelectorAll("button").forEach((b) => {
     b.onclick = () => {
@@ -709,8 +732,9 @@ function buildVerification(ver) {
       const lv = loc.variables[vkey];
       const unit = (ver.units && ver.units[vkey]) || "";
       const vlabel = (ver.var_labels && ver.var_labels[vkey]) || vkey;
-      // Headline names the best *source* model (the blend has its own callout).
-      const best = lv.overall.find((r) => r.model !== "powwx_blend") || lv.overall[0];
+      // Headline: the day-ahead ranking of the *source* models (the blend has its
+      // own callout). Never a pooled all-lead ranking (review F2).
+      const dayAhead = lv.winners_by_lead.find((w) => w.lead_day === 1);
 
       const head = document.createElement("div");
       head.className = "loc-head";
@@ -722,12 +746,24 @@ function buildVerification(ver) {
       // Winner callout + period/coverage.
       const callout = document.createElement("div");
       callout.className = "verif-callout";
-      const dayWins = lv.best_by_lead
-        .map((b) => `d${b.lead_day}: ${labels[b.model] || b.model}`).join(" · ");
+      const dayWins = lv.winners_by_lead
+        .map((w) => `${w.lead_day === 0 ? "same day" : `d${w.lead_day}`}: ` +
+          (w.decisive ? (labels[w.model] || w.model) : w.runner_up ? "tie" : `${labels[w.model] || w.model} only`))
+        .join(" · ");
+      let headline = "";
+      if (dayAhead && dayAhead.decisive) {
+        headline = `Day-ahead, <strong>${labels[dayAhead.model] || dayAhead.model}</strong> is the most accurate here: ` +
+          `MAE <strong>${dayAhead.mae.toFixed(2)} ${unit}</strong>, ` +
+          `${dayAhead.margin.toFixed(2)} ± ${dayAhead.margin_se.toFixed(2)} ${unit} ahead of ` +
+          `${labels[dayAhead.runner_up] || dayAhead.runner_up} (n ${dayAhead.n.toLocaleString()}).`;
+      } else if (dayAhead) {
+        headline = `Day-ahead, it's <strong>too close to call</strong>: ` +
+          `${dayAhead.tied.map((id) => labels[id] || id).join(", ")} are within 2 standard errors ` +
+          `of each other (best MAE ${dayAhead.mae.toFixed(2)} ${unit}, n ${dayAhead.n.toLocaleString()}).`;
+      }
       callout.innerHTML =
-        `<p>🏆 <strong>${labels[best.model] || best.model}</strong> has the lowest error here — ` +
-        `MAE <strong>${best.mae.toFixed(2)} ${unit}</strong> over ${best.n.toLocaleString()} matched hours.</p>` +
-        `<p class="note">Best by lead day → ${dayWins}</p>` +
+        (headline ? `<p>${headline}</p>` : "") +
+        `<p class="note">Most accurate by lead day → ${dayWins}</p>` +
         `<p class="note">${lv.n_pairs.toLocaleString()} forecast/observation pairs · ` +
         `${lv.period.start.slice(0, 10)} → ${lv.period.end.slice(0, 10)} · ` +
         `actuals: ${loc.obs_source}</p>`;
@@ -736,18 +772,21 @@ function buildVerification(ver) {
       // powWX blend callout — our composed forecast, judged out-of-sample.
       if (lv.blend) {
         const bd = lv.blend;
-        const rawLabel = labels[bd.best_raw_model] || bd.best_raw_model;
-        const verdict = bd.beats_best_raw
-          ? `<strong>beats</strong> the best single model (${rawLabel}) by <strong>${bd.improvement_pct}%</strong> overall`
-          : `is within <strong>${Math.abs(bd.improvement_pct)}%</strong> of the best single model (${rawLabel}) overall — and leads through the mid-range (see the chart)`;
+        const vs = bd.vs_best_by_lead;
+        const verdict = !vs.decisive
+          ? `is <strong>about as accurate as</strong> the best single model at each lead (difference ${vs.improvement_pct}% ± ${vs.improvement_se}%)`
+          : vs.improvement_pct > 0
+            ? `has <strong>${vs.improvement_pct}% ± ${vs.improvement_se}% lower error</strong> than the best single model at each lead`
+            : `has <strong>${Math.abs(vs.improvement_pct)}% ± ${vs.improvement_se}% higher error</strong> than the best single model at each lead`;
         const bc = document.createElement("div");
         bc.className = "blend-callout";
         const band = (bd.band_coverage_oos != null)
           ? ` Its ${Math.round(bd.band_level * 100)}% range covers <strong>${Math.round(bd.band_coverage_oos * 100)}%</strong> of outcomes out-of-sample.`
           : "";
         bc.innerHTML =
-          `<p>⚙️ <strong style="color:${MODEL_COLORS.powwx_blend}">powWX blend</strong> <em class="tag">experimental</em> — bias-corrected, skill-weighted consensus, judged <em>out-of-sample</em> — ${verdict}. ` +
-          `MAE <strong>${bd.overall.mae} ${unit}</strong> (bias ${bd.overall.bias >= 0 ? "+" : ""}${bd.overall.bias}).${band}</p>`;
+          `<p>⚙️ <strong style="color:${MODEL_COLORS.powwx_blend}">powWX blend</strong> <em class="tag">experimental</em> — bias-corrected, skill-weighted consensus, judged <em>out-of-sample</em> — ${verdict}, ` +
+          `compared on the same forecasts (n ${vs.n.toLocaleString()}). ` +
+          `Its bias is ${bd.overall.bias >= 0 ? "+" : ""}${bd.overall.bias} ${unit}.${band}</p>`;
         block.appendChild(bc);
       }
 
@@ -779,8 +818,8 @@ function buildVerification(ver) {
       // Leaderboard table panel.
       const tpanel = document.createElement("div");
       tpanel.className = "panel";
-      tpanel.innerHTML = `<h3>Leaderboard <span class="unit">all lead days</span></h3>`;
-      tpanel.appendChild(makeOverallTable(lv, ver, unit));
+      tpanel.innerHTML = `<h3>Most accurate by lead day</h3>`;
+      tpanel.appendChild(makeLeadTable(lv, ver, unit));
       grid.appendChild(tpanel);
       block.appendChild(grid);
 

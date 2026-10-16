@@ -13,6 +13,8 @@ The pieces are deliberately small and pure so they can be tested and reused:
   signed error ``forecast - observed`` and the lead time.
 - :func:`metrics_by_lead` and :func:`overall_metrics` aggregate MAE / bias /
   RMSE / n per model and lead day.
+- :func:`winners_by_lead` / :func:`rank_with_ties` name the most accurate model
+  per lead day (or stratum) on shared forecasts, or report a tie.
 
 Time handling: the logger writes ``valid_time`` as naive UTC (Open-Meteo is
 queried with ``timezone=GMT``) and ``issued_at`` / observation times as ISO
@@ -26,6 +28,7 @@ from __future__ import annotations
 import glob
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 # How close (in time) an observation must be to a forecast's valid_time to count
@@ -189,18 +192,6 @@ def overall_metrics(aligned: pd.DataFrame, *, min_n: int = 20) -> pd.DataFrame:
     return out
 
 
-def best_by_lead(by_lead: pd.DataFrame) -> pd.DataFrame:
-    """For each lead day, the model with the lowest MAE (the 'winner')."""
-    if by_lead.empty:
-        return pd.DataFrame(columns=["lead_day", "model", "mae", "n"])
-    idx = by_lead.groupby("lead_day")["mae"].idxmin()
-    return (
-        by_lead.loc[idx, ["lead_day", "model", "mae", "n"]]
-        .sort_values("lead_day")
-        .reset_index(drop=True)
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Stratified / conditional verification
 # --------------------------------------------------------------------------- #
@@ -273,9 +264,93 @@ def stratified_metrics(
     return out[out["n"] >= min_n].reset_index(drop=True)
 
 
-def best_by_stratum(strat: pd.DataFrame, *, by: str) -> pd.DataFrame:
-    """For each stratum, the model with the lowest MAE."""
-    if strat.empty:
-        return pd.DataFrame(columns=[by, "model", "mae", "n"])
-    idx = strat.groupby(by)["mae"].idxmin()
-    return strat.loc[idx, [by, "model", "mae", "n"]].reset_index(drop=True)
+# --------------------------------------------------------------------------- #
+# Fair ranking: paired comparisons with day-block bootstrap uncertainty
+# --------------------------------------------------------------------------- #
+# Two models are compared only on forecasts both made for the same hours (same
+# issued_at and valid_time), so neither is scored on easier cases. Errors within
+# a day are correlated, so the uncertainty comes from resampling whole days (a
+# block bootstrap). A model is named most accurate only if it beats every other
+# model by more than TIE_SE standard errors; otherwise the leaders are a tie.
+
+N_BOOT = 400
+TIE_SE = 2.0
+MIN_DAYS = 10   # fewer independent days than this: never call a winner
+_PAIR_KEYS = ["issued_at", "valid_time"]
+
+
+def paired_comparison(a: pd.DataFrame, b: pd.DataFrame, *, n_boot: int = N_BOOT,
+                      seed: int = 0) -> dict | None:
+    """Compare two sets of matched pairs on the forecasts they share.
+
+    ``a`` and ``b`` need ``issued_at, valid_time, abs_error``. Returns ``n``,
+    ``days``, ``mae_a``, ``mae_b``, ``diff`` (= mae_a − mae_b) and ``diff_se``,
+    ``pct`` (how much lower a's MAE is than b's, %) and ``pct_se``; ``None`` if
+    they share no forecasts.
+    """
+    m = a[_PAIR_KEYS + ["abs_error"]].merge(
+        b[_PAIR_KEYS + ["abs_error"]], on=_PAIR_KEYS, suffixes=("_a", "_b"))
+    if m.empty:
+        return None
+    g = (pd.DataFrame({"a": m["abs_error_a"], "b": m["abs_error_b"],
+                       "day": m["valid_time"].dt.floor("D")})
+         .groupby("day").agg(a=("a", "sum"), b=("b", "sum"), n=("a", "size")))
+    sa, sb, cnt = (g[c].to_numpy(dtype=float) for c in ("a", "b", "n"))
+    idx = np.random.default_rng(seed).integers(0, len(g), size=(n_boot, len(g)))
+    ba, bb, bn = sa[idx].sum(axis=1), sb[idx].sum(axis=1), cnt[idx].sum(axis=1)
+    mae_a, mae_b = sa.sum() / cnt.sum(), sb.sum() / cnt.sum()
+    return {
+        "n": int(cnt.sum()), "days": int(len(g)),
+        "mae_a": float(mae_a), "mae_b": float(mae_b),
+        "diff": float(mae_a - mae_b), "diff_se": float(np.std((ba - bb) / bn, ddof=1)),
+        "pct": float((mae_b - mae_a) / mae_b * 100.0),
+        "pct_se": float(np.std((bb - ba) / bb * 100.0, ddof=1)),
+    }
+
+
+def rank_with_ties(rows: pd.DataFrame, *, min_n: int = 20, tie_se: float = TIE_SE,
+                   min_days: int = MIN_DAYS) -> dict | None:
+    """Most accurate model within one comparison cell (one lead day, or one
+    stratum), or a tie.
+
+    The candidate is the model with the lowest MAE; it is ``decisive`` only if,
+    on shared forecasts, every other model's MAE is higher by more than
+    ``tie_se`` standard errors (and there is another model to beat). ``tied``
+    lists the candidate plus every model it doesn't clearly beat. ``margin`` /
+    ``margin_se`` are the runner-up's paired MAE minus the candidate's.
+    """
+    if rows.empty:
+        return None
+    mae = rows.groupby("model")["abs_error"].agg(["mean", "size"])
+    mae = mae[mae["size"] >= min_n].sort_values("mean")
+    if mae.empty:
+        return None
+    best = mae.index[0]
+    best_rows = rows[rows["model"] == best]
+    tied = [best]
+    runner = None
+    for other in mae.index[1:]:
+        c = paired_comparison(rows[rows["model"] == other], best_rows)
+        clear = (c is not None and c["n"] >= min_n and c["days"] >= min_days
+                 and c["diff"] > tie_se * c["diff_se"])
+        if not clear:
+            tied.append(other)
+        if runner is None:
+            runner = (other, c)
+    # A model alone in the cell has nothing to beat: not a decisive winner.
+    out = {"model": best, "mae": float(mae.loc[best, "mean"]), "n": int(mae.loc[best, "size"]),
+           "tied": tied, "decisive": len(tied) == 1 and runner is not None,
+           "runner_up": None, "margin": None, "margin_se": None}
+    if runner is not None and runner[1] is not None:
+        out.update(runner_up=runner[0], margin=runner[1]["diff"], margin_se=runner[1]["diff_se"])
+    return out
+
+
+def winners_by_lead(aligned: pd.DataFrame, *, min_n: int = 20) -> list[dict]:
+    """:func:`rank_with_ties` for each lead day, as ``[{lead_day, ...}, ...]``."""
+    out = []
+    for ld, rows in aligned.groupby("lead_day", sort=True):
+        r = rank_with_ties(rows, min_n=min_n)
+        if r is not None:
+            out.append({"lead_day": int(ld), **r})
+    return out

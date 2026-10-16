@@ -94,8 +94,7 @@ def test_metrics_and_best_by_lead():
     assert m1["mae"] == 0.0 and m1["bias"] == 0.0
     assert m2["mae"] == 2.0 and m2["bias"] == 2.0   # warm bias
 
-    best = ver.best_by_lead(by_lead)
-    assert best.iloc[0]["model"] == "m1"            # perfect model wins lead day 1
+    assert set(by_lead["lead_day"]) == {1}
 
 
 def _aligned(rows):
@@ -133,8 +132,6 @@ def test_stratified_metrics_fixed_lead_and_winner():
     m2 = sm[sm["model"] == "m2"].iloc[0]
     assert m2["season"] == "Winter"
     assert m2["mae"] == 3.0          # day-2 (error 0) excluded -> stays 3.0
-    best = ver.best_by_stratum(sm, by="season")
-    assert best.iloc[0]["model"] == "m1"
 
 
 def test_empty_inputs_are_safe():
@@ -145,3 +142,49 @@ def test_empty_inputs_are_safe():
     assert empty.empty
     assert ver.metrics_by_lead(empty).empty
     assert ver.overall_metrics(empty).empty
+
+
+# --- fair ranking (review F2, F7; F19 item 3) ------------------------------- #
+
+def _pairs(model, lead_day, abs_errors, *, days=20, start="2025-01-01"):
+    """Matched pairs for one model at one lead day: one per hour of ``days`` days,
+    cycling through ``abs_errors`` (all positive errors)."""
+    vts = pd.date_range(start, periods=days * 24, freq="h", tz="UTC")
+    errs = [abs_errors[i % len(abs_errors)] for i in range(len(vts))]
+    return pd.DataFrame({
+        "model": model, "lead_day": lead_day, "valid_time": vts,
+        "issued_at": vts - pd.Timedelta(days=lead_day), "error": errs, "abs_error": errs,
+    })
+
+
+def test_short_horizon_model_wins_pooled_but_not_lead_1():
+    # S only forecasts days 0-1 and is great at day 0; L forecasts days 0-5 and is
+    # better at day 1 but poor later. Pooled MAE favours S (0.6 vs 1.55); a fair
+    # day-1 ranking must name L.
+    a = pd.concat(
+        [_pairs("S", 0, [0.2]), _pairs("S", 1, [1.0]),
+         _pairs("L", 0, [0.5]), _pairs("L", 1, [0.8])]
+        + [_pairs("L", d, [2.0]) for d in range(2, 6)], ignore_index=True)
+    overall = ver.overall_metrics(a)
+    assert overall.iloc[0]["model"] == "S"
+    by_lead = {w["lead_day"]: w for w in ver.winners_by_lead(a)}
+    assert by_lead[1]["model"] == "L" and by_lead[1]["decisive"]
+    assert by_lead[0]["model"] == "S" and by_lead[0]["decisive"]
+    assert not by_lead[2]["decisive"]          # L alone at day 2: nothing to beat
+
+
+def test_close_models_are_a_tie():
+    # Same error distribution, shuffled: a tiny MAE gap is noise, not a winner.
+    a = pd.concat([_pairs("A", 1, [0.4, 1.9, 1.1, 0.2, 2.5, 0.9]),
+                   _pairs("B", 1, [1.1, 0.4, 2.5, 0.9, 0.2, 1.9])], ignore_index=True)
+    w = ver.rank_with_ties(a)
+    assert not w["decisive"] and sorted(w["tied"]) == ["A", "B"]
+
+
+def test_paired_comparison_uses_only_shared_forecasts():
+    a = _pairs("A", 1, [1.0], days=20)
+    b = pd.concat([_pairs("B", 1, [2.0], days=10),                       # shared with A
+                   _pairs("B", 1, [0.0], days=10, start="2026-01-01")])  # B only: ignored
+    c = ver.paired_comparison(a, b)
+    assert c["n"] == 10 * 24 and c["days"] == 10
+    assert c["mae_a"] == 1.0 and c["mae_b"] == 2.0 and c["pct"] == 50.0
