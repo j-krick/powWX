@@ -54,3 +54,16 @@ def test_build_writes_all_outputs_when_a_station_fetch_raises(tmp_path, monkeypa
     assert "pow_o_meter" not in verification["locations"]  # the broken one is left out
     fl_payload = json.loads((tmp_path / "freezing_level.json").read_text(encoding="utf-8"))
     assert fl_payload["estimate"] is None                  # needs both stations
+
+
+def test_live_blend_stops_where_the_band_ends(monkeypatch):
+    # Review F15: no blend line beyond the leads with an out-of-sample band.
+    vt = pd.date_range("2025-03-01", periods=4, freq="D", tz="UTC")
+    monkeypatch.setattr(bv.bl, "learn_coefficients", lambda *a, **k: None)
+    monkeypatch.setattr(bv.bl, "live_blend", lambda run, coef: pd.DataFrame(
+        {"valid_time": vt, "value": [1.0, 2.0, 3.0, 4.0], "lead_day": [0, 1, 2, 3]}))
+    fc = pd.DataFrame({"model": "m", "issued_at": vt[0], "valid_time": vt, "value": 0.0,
+                       "source": "live"})
+    out = bv._live_blend_series(fc, pd.DataFrame({"x": [1]}), {0: (-1.0, 1.0), 1: (-2.0, 2.0)})
+    assert out["values"] == [1.0, 2.0]
+    assert out["lower"] == [0.0, 0.0] and out["upper"] == [2.0, 4.0]

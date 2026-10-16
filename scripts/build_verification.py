@@ -131,13 +131,16 @@ def _live_blend_series(fc, aligned, band_q) -> dict | None:
     run["lead_day"] = lead.round().astype(int)
     coef = bl.learn_coefficients(aligned, asof=pd.Timestamp(datetime.now(timezone.utc)))
     series = bl.live_blend(run[["model", "valid_time", "value", "lead_day"]], coef)
+    # Stop the line where the out-of-sample band ends: past the leads with a
+    # verified error distribution, the blend has no evidence behind it (review F15).
+    series = series[series["lead_day"].astype(int).isin(band_q.keys())]
     if series.empty:
         return None
     lower, upper = [], []
     for _, r in series.iterrows():
-        q = band_q.get(int(r["lead_day"]))
-        lower.append(round(float(r["value"] + q[0]), 2) if q else None)
-        upper.append(round(float(r["value"] + q[1]), 2) if q else None)
+        q = band_q[int(r["lead_day"])]
+        lower.append(round(float(r["value"] + q[0]), 2))
+        upper.append(round(float(r["value"] + q[1]), 2))
     return {
         "issued_at": latest.strftime("%Y-%m-%dT%H:%MZ"),
         "times": [t.strftime("%Y-%m-%dT%H:%MZ") for t in series["valid_time"]],
@@ -400,9 +403,14 @@ def build() -> tuple[dict, dict, dict]:
         "units": "m",
         "t_sigma_c": fl.T_SIGMA,
         "note": "Observed freezing level estimated from the two stations' temperatures "
-                "(lapse-rate extrapolation), interpolation regime only (0 °C between "
-                f"{int(fl.Z_BOTTOM)} and {int(fl.Z_TOP)} m). Band is ±1σ. Top station is "
-                "off in summer, so this is a winter/spring product.",
+                "with a straight-line lapse rate. Regime 'interp' (0 °C between "
+                f"{int(fl.Z_BOTTOM)} and {int(fl.Z_TOP)} m) is interpolation; 'above' and "
+                f"'below' are extrapolated up to {FL_EXTRAP_ABOVE_M} m above the top station "
+                f"or {FL_EXTRAP_BELOW_M} m below the bottom one, a rougher guess (drawn "
+                "dashed). Band is ±1σ of measurement noise only; it does not include "
+                "the lapse rate changing with height.",
+        "regime_counts": ({r: fl_product["regime"].count(r) for r in ("interp", "above", "below")}
+                          if fl_product else None),
         "estimate": fl_product,
     }
     return payload, blend_payload, fl_payload

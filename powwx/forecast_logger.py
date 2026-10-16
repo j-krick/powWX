@@ -87,5 +87,18 @@ def log_forecasts(*, data_dir: Path | None = None) -> dict:
         "n_records": len(all_records),
         "per_location": per_location,
         "failed_locations": errors,
+        "missing_models": missing_models(all_records, ids, list(per_location)),
         "path": str(path) if path else None,
     }
+
+
+def missing_models(records: list[dict], model_ids: list[str], location_ids: list[str]) -> dict:
+    """Configured models that returned no values at a location that was fetched.
+
+    Open-Meteo drops an unknown or renamed model id silently, so without this a
+    model could vanish from the log unnoticed (review F11)."""
+    got: dict[str, set] = {}
+    for r in records:
+        got.setdefault(r["location"], set()).add(r["model"])
+    out = {lid: [m for m in model_ids if m not in got.get(lid, set())] for lid in location_ids}
+    return {lid: ms for lid, ms in out.items() if ms}

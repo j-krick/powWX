@@ -176,9 +176,15 @@ def build_webcams() -> dict:
         return {"public_base_url": "", "cameras": wi.base_cameras()}
     from powwx.storage import get_r2_client
 
-    client = get_r2_client()
-    bucket = os.environ["R2_BUCKET"]
-    return wi.build_webcam_index(client=client, bucket=bucket, public_base_url=public)
+    # An R2 failure (e.g. an expired token) costs only the frame history, never
+    # the whole page build (review F11).
+    try:
+        client = get_r2_client()
+        bucket = os.environ["R2_BUCKET"]
+        return wi.build_webcam_index(client=client, bucket=bucket, public_base_url=public)
+    except Exception as exc:  # noqa: BLE001 - webcams are best-effort
+        print(f"::warning title=webcams::R2 listing failed, live frames only ({exc})")
+        return {"public_base_url": "", "cameras": wi.base_cameras()}
 
 
 def main() -> int:

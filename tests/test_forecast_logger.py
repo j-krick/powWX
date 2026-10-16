@@ -71,3 +71,14 @@ def test_all_ok_skips_second_pass(tmp_path):
     assert summary["n_records"] == 2
     assert f.call_count == 2
     sleep.assert_not_called()
+
+
+def test_missing_models_are_reported_per_location():
+    # Review F19 item 4: a configured model Open-Meteo returns nothing for (e.g. a
+    # renamed id) must be flagged, not silently absent.
+    recs = [{"location": "pow_o_meter", "model": "gem_global"},
+            {"location": "pow_o_meter", "model": "icon_global"},
+            {"location": "station_58", "model": "gem_global"}]
+    out = fl.missing_models(recs, ["gem_global", "icon_global"], ["pow_o_meter", "station_58"])
+    assert out == {"station_58": ["icon_global"]}
+    assert fl.missing_models([], ["gem_global"], ["pow_o_meter"]) == {"pow_o_meter": ["gem_global"]}

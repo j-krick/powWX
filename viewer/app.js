@@ -248,7 +248,8 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
       borderWidth: 3, tension: 0.25, pointRadius: 0, spanGaps: false, order: -2,
     });
   }
-  // Observed freezing-level estimate from the two stations (interp regime only):
+  // Observed freezing-level estimate from the two stations (solid = interpolated,
+  // dashed = extrapolated above/below them):
   // a white line with a ±1σ band, shown in the past where both stations report.
   if (fle) {
     // Regime per chart slot, so extrapolated (above/below) segments draw dashed
@@ -539,30 +540,34 @@ function makeLeadTable(locVar, ver, unit) {
   table.className = "fc verif";
   table.innerHTML =
     `<thead><tr><th>Lead</th><th>Most accurate</th><th>MAE</th><th>Ahead of next by</th>` +
-    `<th>n</th><th>Blend vs it</th></tr></thead>`;
+    `<th>n</th><th>powWX blend</th></tr></thead>`;
   const tbody = document.createElement("tbody");
   for (const w of locVar.winners_by_lead) {
     const b = blendByLead.get(w.lead_day);
     const margin = w.margin != null ? `${w.margin.toFixed(2)} ± ${w.margin_se.toFixed(2)}` : "—";
+    // Blend MAE, then its error relative to the winner on the same forecasts.
+    // Gold where the blend clearly beats the best single model at this lead.
+    const blendWins = b && b.decisive && b.improvement_pct > 0;
     const blend = b
-      ? `${b.improvement_pct > 0 ? "−" : "+"}${Math.abs(b.improvement_pct)}% ± ${b.improvement_se}%` +
-        (b.decisive ? "" : " <span class=\"note\">(tie)</span>")
+      ? `${b.blend_mae.toFixed(2)} (${b.improvement_pct > 0 ? "−" : "+"}${Math.abs(b.improvement_pct)}% ± ${b.improvement_se}%` +
+        (b.decisive ? ")" : ", tie)")
       : "—";
     const tr = document.createElement("tr");
     if (w.decisive) tr.className = "leader";
     tr.innerHTML =
       `<td>${w.lead_day === 0 ? "same day" : `day ${w.lead_day}`}</td>` +
       `<td>${winnerText(w, labels)}</td><td>${w.mae.toFixed(2)}</td><td>${margin}</td>` +
-      `<td>${w.n.toLocaleString()}</td><td>${blend}</td>`;
+      `<td>${w.n.toLocaleString()}</td><td${blendWins ? ' class="blend-win"' : ""}>${blend}</td>`;
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
   wrap.appendChild(table);
   const cap = document.createElement("div");
   cap.className = "note";
-  cap.textContent = `MAE in ${unit}. "Ahead of next by" and "Blend vs it" compare forecasts made for ` +
-    "the same hours, ± 1 standard error. A tie means the gap is within 2 standard errors. " +
-    "Blend vs it: − means the blend's error is lower.";
+  cap.textContent = `MAE in ${unit}. "Most accurate" ranks the source models only. ` +
+    "The powWX blend column gives its MAE and how its error compares with that lead's most " +
+    "accurate model (− = lower; gold = clearly better). Margins compare forecasts made for the " +
+    "same hours, ± 1 standard error; a tie means the gap is within 2 standard errors.";
   wrap.appendChild(cap);
   return wrap;
 }

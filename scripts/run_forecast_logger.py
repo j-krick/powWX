@@ -21,6 +21,11 @@ def main() -> int:
     # warning annotation rather than failing, so the good data isn't discarded.
     for loc_id, err in summary["failed_locations"].items():
         print(f"::warning title=forecast logger::{loc_id} not logged this run ({err})")
+    # A model with no values is likely renamed or dropped by Open-Meteo; check
+    # with scripts/verify_models.py. Warn, don't fail: failing would skip the commit.
+    for loc_id, models in summary["missing_models"].items():
+        what = "any model" if summary["per_location"][loc_id] == 0 else ", ".join(models)
+        print(f"::warning title=forecast logger::{loc_id}: no values for {what}")
     if summary["n_records"] == 0:
         print("WARNING: no records logged this run.", file=sys.stderr)
         return 1
