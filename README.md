@@ -88,9 +88,12 @@ vs. lead time and ranks the models on a leaderboard.
   the model value is a free-atmosphere column diagnostic, the estimate a surface
   one.
 - **Actuals by station:**
-  - POW-O-METER (top) is read straight from its Google Sheet (durable history
-    back to 2025-01-26), so the backfill is verifiable **today** — ~243 k matched
-    temperature hours.
+  - POW-O-METER (top) comes from powOmeter's published v1 files
+    (`best_hourly.csv`: true UTC, on the hour, history back to 2025-01-26), copied
+    into the observation log below, so the backfill is verifiable without a live
+    fetch. Until 2026-10-16 it was read from the station's Google Sheet, whose
+    pre-2026-09-22 times were an hour off in daylight-saving time; top-station
+    numbers from before the switch are superseded.
   - Station #58 (bottom) is logged forward by the **observation logger** below
     (AvCan's API keeps only ~7 days, so un-logged obs are lost — same deadline
     logic as forecasts), **and** backfilled from the PCIC/PCDS portal (below):
@@ -114,10 +117,13 @@ hours collapse on read).
 
 **Observation logger** — `powwx/obs_logger.py` + `scripts/run_obs_logger.py`,
 append-only to `data/observations/obs_date=YYYY-MM-DD/*.parquet`, committed by
-`obs-logger.yml` (every 6 h). Station #58 only; POW-O-METER stays in its sheet.
+`obs-logger.yml` (every 6 h). Station #58, plus POW-O-METER temperature and
+humidity (new hours only, `source=powometer_v1`). POW-O-METER snow depth is not
+logged: it must stay split by site across the 2026-09-26 move.
 
-GEPS (Canadian ensemble) and fanning verification out to wind / precip / snow
-depth are the remaining Phase 2 work.
+GEPS (Canadian ensemble) is logged to `data/ensembles/` but not yet verified.
+Verifying it and fanning out to wind / precip / snow depth are the remaining
+Phase 2 work.
 
 ## Models logged
 

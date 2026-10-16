@@ -1,10 +1,8 @@
 """Observation sources (the "actuals") for the viewer and Phase 2 verification.
 
-Currently wired:
 - **Station #58** (bottom, 740 m) via Avalanche Canada's public weather API.
-
-Deferred (Phase 1b), stub included:
-- **POW-O-METER** (top, 1150 m) via a published Google Sheet CSV.
+- **POW-O-METER** (top, 1150 m) via powOmeter's published data contract v1
+  (``best_hourly.csv``, Mount Remo Backcountry Society, CC BY 4.0).
 
 Observations are normalised to the same variable names and units as the logged
 Open-Meteo forecasts so the viewer can overlay them directly:
@@ -14,7 +12,6 @@ Open-Meteo forecasts so the viewer can overlay them directly:
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -22,21 +19,20 @@ import requests
 STATION_58_URL = "https://weather.prod.avalanche.ca/stations/58/measurements"
 REQUEST_TIMEOUT = 30
 
-# POW-O-METER (top, 1150 m): published Google-Sheet CSV. Timestamps are naive PST
-# (UTC-8); snow depth is already in metres, temp in degC, humidity in %, so no
-# unit scaling. Transmissions are suspended over summer, so the series ends in
-# late May. This is the single source of truth for the POW-O-METER source config;
-# both the viewer builder and the verification builder read it from here.
-# The published-sheet URL is private to MRBS, so it is never committed or logged:
-# it comes from the POW_O_METER_CSV_URL environment variable (a repo secret in CI).
-POW_O_METER_URL_ENV = "POW_O_METER_CSV_URL"
-POW_O_METER_TZ_OFFSET_HOURS = -8  # PST
-POW_O_METER_COLUMN_MAP = {
-    "time": "Measurement Time (PST)",
-    "Air Temperature (°C)": ("temperature_2m", 1.0),
-    "Humidity (%)": ("relative_humidity_2m", 1.0),
-    "Snow Depth (m)": ("snow_depth", 1.0),
+# POW-O-METER (top, 1150 m): powOmeter's published contract v1. best_hourly.csv is
+# on the hour in true UTC (times before 2026-09-22 already corrected), interpolated
+# by powOmeter, with readings rated "poor" removed. One row per (site_id, variable,
+# statistic, hour); the station moved from site shames_top_a to shames_top_b on
+# 2026-09-26. powOmeter's CHANGELOG.md announces any change to the contract.
+POWOMETER_V1_URL = "https://mount-remo-backcountry-society.github.io/powOmeter/v1/"
+# (variable, statistic) -> (powWX variable, multiplier to reach forecast units).
+POWOMETER_V1_MAP = {
+    ("air_temperature", "point"): ("temperature_2m", 1.0),
+    ("relative_humidity", "point"): ("relative_humidity_2m", 1.0),
+    ("snow_depth", "median"): ("snow_depth", 0.01),   # cm -> m
 }
+# Rows rated "suspect" are left out; "good" and "estimate" are kept.
+POWOMETER_V1_DROP_QUALITY = {"suspect"}
 
 # Avalanche Canada field -> (powWX variable, multiplier to reach forecast units).
 # AvCan: temp degC, precip mm, snowHeight cm, newSnow cm, wind km/h, dir deg.
@@ -90,122 +86,32 @@ def fetch_station_58(*, days: int = 7) -> list[dict]:
     return records
 
 
-def fetch_pow_o_meter(
-    *, csv_url: str, column_map: dict, source_utc_offset_hours: float = 0.0
-) -> list[dict]:
-    """Phase 1b: parse the POW-O-METER published-CSV into the same long schema.
+def fetch_powometer_v1(*, base_url: str = POWOMETER_V1_URL) -> list[dict]:
+    """Fetch POW-O-METER's full hourly history from powOmeter v1, normalised to
+    long records ``{location, time, variable, value, site_id}`` (time is UTC ISO
+    ``...Z``, location ``pow_o_meter``).
 
-    ``column_map`` maps CSV column names to (powWX variable, multiplier), plus a
-    special ``"time"`` key giving the timestamp column.
-
-    The sheet's timestamps are naive local time; ``source_utc_offset_hours`` is
-    that local zone's offset from UTC (e.g. ``-8`` for PST), used to normalise the
-    ``time`` field to a UTC ISO ``...Z`` string — the same form ``fetch_station_58``
-    returns — so downstream alignment treats both stations identically.
+    ``site_id`` is kept because snow depth is not comparable across the station
+    move; temperature and humidity can be pooled across sites.
     """
-    import csv
     import io
 
-    try:
-        resp = requests.get(csv_url, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as exc:
-        raise RuntimeError(f"POW-O-METER sheet fetch failed: {type(exc).__name__}") from None
-    if not resp.ok:
-        # Not raise_for_status(): its message embeds the URL, which must stay private.
-        raise RuntimeError(f"POW-O-METER sheet returned HTTP {resp.status_code}")
-    # Force UTF-8: requests guesses ISO-8859-1 for Google's CSV, which mangles
-    # non-ASCII headers like "Air Temperature (°C)" so they fail to match the map.
-    text = resp.content.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text))
-    time_col = column_map["time"]
-    offset = timedelta(hours=source_utc_offset_hours)
-
-    records: list[dict] = []
-    for row in reader:
-        ts = row.get(time_col)
-        if not ts:
-            continue
-        try:
-            local = datetime.strptime(ts.strip(), "%Y-%m-%d %H:%M:%S")
-        except (ValueError, AttributeError):
-            continue
-        utc = (local - offset).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for col, spec in column_map.items():
-            if col == "time":
-                continue
-            variable, mult = spec
-            raw = row.get(col)
-            if raw in (None, ""):
-                continue
-            try:
-                value = float(raw) * mult
-            except ValueError:
-                continue
-            records.append(
-                {"location": "pow_o_meter", "time": utc, "variable": variable,
-                 "value": round(value, 3)}
-            )
-    return records
-
-
-def fetch_pow_o_meter_default() -> list[dict]:
-    """Fetch the full POW-O-METER history using the module's source config.
-
-    Raises ``RuntimeError`` if the sheet URL isn't configured; callers treat the
-    top station as unavailable, like any other failed fetch."""
-    csv_url = os.environ.get(POW_O_METER_URL_ENV, "").strip()
-    if not csv_url:
-        raise RuntimeError(f"{POW_O_METER_URL_ENV} is not set")
-    return fetch_pow_o_meter(
-        csv_url=csv_url,
-        column_map=POW_O_METER_COLUMN_MAP,
-        source_utc_offset_hours=POW_O_METER_TZ_OFFSET_HOURS,
-    )
-
-
-def resample_hourly_long(records: list[dict], *, max_gap_minutes: int = 90) -> list[dict]:
-    """Snap an irregular long obs series onto the exact hourly grid by linear
-    time-interpolation, per (location, variable).
-
-    The POW-O-METER reports about every 67 minutes, so its timestamps drift
-    through the clock and almost never land on the hour — which misaligns it
-    against the on-the-hour forecasts and the bottom station (adding noise to the
-    freezing-level estimate and the top-station verification). Interpolating to
-    the hour fixes that at the source. A grid hour is kept only if a real
-    observation lies within ``max_gap_minutes`` (so we never interpolate across a
-    real transmission outage). Other fields (source, etc.) are not preserved.
-    """
-    if not records:
-        return records
     import pandas as pd
 
-    df = pd.DataFrame.from_records(records)
-    df["t"] = pd.to_datetime(df["time"], utc=True)
-    out: list[dict] = []
-    for (loc, variable), g in df.groupby(["location", "variable"]):
-        s = g.set_index("t")["value"].sort_index()
-        s = s[~s.index.duplicated(keep="last")]
-        if len(s) < 2:
-            continue
-        grid = pd.date_range(s.index.min().ceil("h"), s.index.max().floor("h"), freq="h")
-        if len(grid) == 0:
-            continue
-        # Interpolate onto the union of real + grid times, then read the grid.
-        union = s.reindex(s.index.union(grid)).interpolate(method="time")
-        vals = union.reindex(grid)
-        # Drop grid hours with no real observation within max_gap (real outages).
-        real = pd.Series(s.index, index=s.index)
-        prev = real.reindex(grid, method="ffill")
-        nxt = real.reindex(grid, method="bfill")
-        gap = pd.Timedelta(minutes=max_gap_minutes)
-        near = ((grid - prev).abs() <= gap) | ((nxt - grid).abs() <= gap)
-        for ts, v, ok in zip(grid, vals.to_numpy(), near):
-            if ok and pd.notna(v):
-                out.append({
-                    "location": loc, "variable": variable,
-                    "time": ts.strftime("%Y-%m-%dT%H:%M:%SZ"), "value": round(float(v), 3),
-                })
-    return out
+    resp = requests.get(base_url + "best_hourly.csv", timeout=REQUEST_TIMEOUT * 4)
+    resp.raise_for_status()
+    df = pd.read_csv(io.BytesIO(resp.content),
+                     usecols=["time_utc", "site_id", "variable", "statistic", "value", "quality"])
+    df = df[~df["quality"].isin(POWOMETER_V1_DROP_QUALITY)].dropna(subset=["value"])
+
+    records: list[dict] = []
+    for (variable, statistic), (powwx_var, mult) in POWOMETER_V1_MAP.items():
+        sub = df[(df["variable"] == variable) & (df["statistic"] == statistic)]
+        for t, site, v in zip(sub["time_utc"], sub["site_id"], sub["value"]):
+            records.append({"location": "pow_o_meter", "time": t, "variable": powwx_var,
+                            "value": round(float(v) * mult, 3), "site_id": site})
+    records.sort(key=lambda r: (r["variable"], r["time"]))
+    return records
 
 
 # --------------------------------------------------------------------------- #

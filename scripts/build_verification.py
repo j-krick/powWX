@@ -4,11 +4,11 @@
 Joins the committed forecast log to observed actuals and reports, per location,
 which model has the lowest error and how error grows with lead time.
 
-Actuals by station:
-  - POW-O-METER (top): read directly from its Google Sheet (durable history back
-    to 2025-01-26), so the 2024->now forecast backfill is verifiable immediately.
-  - Station #58 (bottom): read from the append-only observation log (AvCan's API
-    keeps only ~7 days), which accrues going forward via run_obs_logger.py.
+Actuals for both stations come from the append-only observation log, written by
+run_obs_logger.py:
+  - POW-O-METER (top): powOmeter's published v1 hourly series (history back to
+    2025-01-26), so the 2024->now forecast backfill is verifiable.
+  - Station #58 (bottom): Avalanche Canada (keeps only ~7 days) plus the PCDS import.
 
 Phase 2a is temperature-first (the strongest signal, verifiable at both
 elevations); other variables fan out from the same pipeline once this is solid.
@@ -33,7 +33,6 @@ from powwx import blend as bl  # noqa: E402
 from powwx import config as cfg  # noqa: E402
 from powwx import freezing_level as fl  # noqa: E402
 from powwx import obs_logger  # noqa: E402
-from powwx import observations as obs  # noqa: E402
 from powwx import verification as ver  # noqa: E402
 
 # Variables verified in this cut. Temperature first; extend this list to fan out.
@@ -52,16 +51,11 @@ FL_MODELS = ["gfs_seamless", "icon_global"]  # the only models with freezing_lev
 
 
 def _obs_records(location: str, variable: str) -> list[dict]:
-    """Assemble observation records for one station+variable from its source.
+    """Observation records for one station+variable, from the append-only log.
 
-    POW-O-METER reports every ~67 min (drifting off the hour), so we snap it onto
-    the hourly grid — aligning it with the on-the-hour forecasts and bottom station
-    and de-noising both the verification match and the freezing-level estimate.
+    Both stations are on the hour there: station #58 natively, POW-O-METER because
+    powOmeter interpolates its ~67-min readings onto the hour before publishing.
     """
-    if location == "pow_o_meter":
-        recs = [r for r in obs.fetch_pow_o_meter_default() if r["variable"] == variable]
-        return obs.resample_hourly_long(recs)
-    # Everything else: the append-only observation log (station #58 etc.).
     return obs_logger.load_observation_log(cfg.DATA_DIR, location=location, variable=variable)
 
 
@@ -334,7 +328,10 @@ def build() -> tuple[dict, dict, dict]:
                 "label": loc["name"],
                 "elevation_m": loc["elevation_m"],
                 "role": loc["role"],
-                "obs_source": "POW-O-METER Google Sheet" if lid == "pow_o_meter"
+                "obs_source": ("POW-O-METER via powOmeter v1 (logged). Since 2026-10-16 the "
+                               "top station uses powOmeter's corrected UTC times; earlier "
+                               "top-station numbers, from the Google Sheet, are superseded")
+                              if lid == "pow_o_meter"
                               else "Avalanche Canada station #58 (logged)",
                 "variables": per_var,
             }

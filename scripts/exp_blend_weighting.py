@@ -27,7 +27,6 @@ import pandas as pd  # noqa: E402
 
 from powwx import config as cfg  # noqa: E402
 from powwx import obs_logger  # noqa: E402
-from powwx import observations as obs  # noqa: E402
 from powwx import verification as ver  # noqa: E402
 
 WINDOW, MIN_TRAIN, FLOOR = 90, 30, 0.5
@@ -35,10 +34,7 @@ SEASON = ver._SEASON
 
 
 def aligned_for(lid: str) -> pd.DataFrame:
-    if lid == "pow_o_meter":
-        recs = [r for r in obs.fetch_pow_o_meter_default() if r["variable"] == "temperature_2m"]
-    else:
-        recs = obs_logger.load_observation_log(cfg.DATA_DIR, location=lid, variable="temperature_2m")
+    recs = obs_logger.load_observation_log(cfg.DATA_DIR, location=lid, variable="temperature_2m")
     obs_df = ver.observations_frame(recs)
     fc = ver.load_forecast_log(cfg.DATA_DIR, variable="temperature_2m", location=lid)
     return ver.align_to_observations(fc, obs_df, tolerance=pd.Timedelta(minutes=30))

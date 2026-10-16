@@ -29,7 +29,10 @@ def _synthetic_forecasts(location, variable):
     return pd.DataFrame(rows)
 
 
-def _synthetic_station_58(data_dir, *, location, variable):
+def _obs_log(data_dir, *, location, variable):
+    """Station #58 reads fine; the top station's observations can't be read."""
+    if location == "pow_o_meter":
+        raise RuntimeError("observation log unreadable")
     times = pd.date_range("2025-01-01", periods=42 * 24, freq="h", tz="UTC")
     return [{"location": location, "variable": variable,
              "time": t.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -38,11 +41,7 @@ def _synthetic_station_58(data_dir, *, location, variable):
 
 
 def test_build_writes_all_outputs_when_a_station_fetch_raises(tmp_path, monkeypatch):
-    def sheet_down():
-        raise RuntimeError("POW-O-METER sheet returned HTTP 401")
-
-    monkeypatch.setattr(bv.obs, "fetch_pow_o_meter_default", sheet_down)
-    monkeypatch.setattr(bv.obs_logger, "load_observation_log", _synthetic_station_58)
+    monkeypatch.setattr(bv.obs_logger, "load_observation_log", _obs_log)
     monkeypatch.setattr(bv.ver, "load_forecast_log",
                         lambda data_dir, *, variable, location: _synthetic_forecasts(location, variable))
 

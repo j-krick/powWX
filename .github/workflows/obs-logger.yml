@@ -1,10 +1,10 @@
 name: obs-logger
 
-# Append-only observation log for station #58 (bottom). Avalanche Canada's API
-# only retains ~7 days, so an un-logged observation is lost forever — same
-# deadline logic as the forecast logger. Runs every 6h (well inside the 7-day
-# window) and commits the new Parquet file. POW-O-METER (top) is NOT logged here;
-# its Google Sheet is already a durable multi-year hub read directly at build.
+# Append-only observation log for station #58 (bottom) and POW-O-METER (top).
+# Avalanche Canada's API only retains ~7 days, so an un-logged observation is
+# lost forever — same deadline logic as the forecast logger. POW-O-METER's new
+# hours come from powOmeter's published v1 files, so verification keeps its own
+# copy. Runs every 6h (well inside the 7-day window) and commits the new Parquet file.
 on:
   schedule:
     - cron: "15 1,7,13,19 * * *"   # offset from the forecast logger

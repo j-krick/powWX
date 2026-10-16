@@ -1,8 +1,9 @@
 """Tests for the PCDS CSV parser — especially the DST-aware timezone handling,
 which is the subtle, easy-to-get-wrong part (a fixed -8 offset is an hour wrong
-all summer)."""
+all summer) — and for the powOmeter v1 reader."""
 
 import textwrap
+from unittest import mock
 
 from powwx import observations as obs
 
@@ -41,23 +42,34 @@ def test_pcds_units_and_clamp(tmp_path):
     assert by[("2026-01-01T08:00:00Z", "precipitation")] == 0.5
 
 
-def test_resample_hourly_interpolates_and_guards_gaps():
-    # Irregular ~67-min cadence near the hour, then a long outage.
-    recs = [
-        {"location": "pow_o_meter", "variable": "temperature_2m", "time": "2025-01-01T00:14:00Z", "value": 10.0},
-        {"location": "pow_o_meter", "variable": "temperature_2m", "time": "2025-01-01T01:21:00Z", "value": 12.0},
-        # 6-hour gap -> the hours in between must NOT be interpolated.
-        {"location": "pow_o_meter", "variable": "temperature_2m", "time": "2025-01-01T07:20:00Z", "value": 4.0},
-        {"location": "pow_o_meter", "variable": "temperature_2m", "time": "2025-01-01T08:10:00Z", "value": 3.0},
-    ]
-    out = obs.resample_hourly_long(recs, max_gap_minutes=90)
-    by_time = {r["time"]: r["value"] for r in out}
-    assert all(t.endswith(":00:00Z") for t in by_time)              # all on the hour
-    # 01:00 interpolated between 00:14 (10) and 01:21 (12): ~11.37
-    assert abs(by_time["2025-01-01T01:00:00Z"] - 11.37) < 0.05
-    # 03:00–06:00 fall in the 6 h outage -> dropped, not fabricated.
-    assert "2025-01-01T03:00:00Z" not in by_time
-    assert "2025-01-01T08:00:00Z" in by_time                        # supported again
+# Minimal powOmeter v1 best_hourly.csv. The summer row is a daylight-saving-period
+# hour: powOmeter publishes true UTC, so it must come through unshifted (review F4).
+POWOMETER_V1_SAMPLE = textwrap.dedent("""\
+    time_utc,station_id,site_id,variable,statistic,value,unit,source,level,approval,quality,qualifiers
+    2025-07-01T19:00:00Z,powometer,shames_top_a,air_temperature,point,12.5,degC,derived,qc,working,good,interpolated
+    2025-07-01T20:00:00Z,powometer,shames_top_a,air_temperature,point,30.0,degC,derived,qc,working,suspect,interpolated
+    2025-07-01T19:00:00Z,powometer,shames_top_a,relative_humidity,point,80,%,derived,qc,working,good,interpolated
+    2025-07-01T19:00:00Z,powometer,shames_top_a,air_pressure,point,894.4,hPa,derived,qc,working,good,interpolated
+    2026-10-01T08:00:00Z,powometer,shames_top_b,snow_depth,median,12,cm,derived,qc,working,estimate,interpolated
+    2026-10-01T08:00:00Z,powometer,shames_top_b,distance_to_surface,median,2.1,m,derived,qc,working,good,interpolated
+""")
+
+
+def test_powometer_v1_keeps_utc_maps_units_and_drops_suspect():
+    resp = mock.Mock(ok=True, content=POWOMETER_V1_SAMPLE.encode("utf-8"))
+    with mock.patch.object(obs.requests, "get", return_value=resp) as get:
+        recs = obs.fetch_powometer_v1()
+    assert get.call_args[0][0].endswith("/v1/best_hourly.csv")
+    by = {(r["time"], r["variable"]): r for r in recs}
+    assert set(by) == {
+        ("2025-07-01T19:00:00Z", "temperature_2m"),        # UTC as published, no shift
+        ("2025-07-01T19:00:00Z", "relative_humidity_2m"),
+        ("2026-10-01T08:00:00Z", "snow_depth"),
+    }                                                       # suspect + unmapped rows dropped
+    assert by[("2025-07-01T19:00:00Z", "temperature_2m")]["value"] == 12.5
+    assert by[("2026-10-01T08:00:00Z", "snow_depth")]["value"] == 0.12   # cm -> m
+    assert by[("2026-10-01T08:00:00Z", "snow_depth")]["site_id"] == "shames_top_b"
+    assert {r["location"] for r in recs} == {"pow_o_meter"}
 
 
 def test_pcds_skips_all_null_variables(tmp_path):

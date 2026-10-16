@@ -19,7 +19,7 @@ locations:
     # Variables this station actually observes (used in Phase 2 verification).
     # Wind sensor may be added later -> unlocks top-of-hill wind verification.
     observed: [temperature_2m, snow_depth, relative_humidity_2m]
-    source: google_sheet   # POW-O-METER data hub (published CSV / Sheets API)
+    source: powometer_v1   # powOmeter's published v1 files (MRBS, CC BY 4.0)
 
   - id: station_58
     name: DriveBC / Avalanche Canada station #58 (bottom of hill)

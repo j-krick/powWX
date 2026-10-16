@@ -137,13 +137,16 @@ def build_observations() -> dict:
         records += obs.fetch_station_58(days=OBS_DAYS)
     except Exception as exc:  # noqa: BLE001 - obs panels are best-effort
         print(f"WARNING: station #58 fetch failed: {exc}", file=sys.stderr)
-    # POW-O-METER (top, 1150 m) — published Google-Sheet CSV, trimmed to the window.
+    # POW-O-METER (top, 1150 m) — powOmeter v1, already on the hour, trimmed to the
+    # window. Snow depth from the current site only: depths aren't comparable
+    # across the station move.
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=OBS_DAYS)
-        # Snap to the hourly grid so the overlay lines up with the on-the-hour
-        # model series (the chart's hover assumes a shared hourly grid).
-        pom = obs.resample_hourly_long(obs.fetch_pow_o_meter_default())
-        records += [r for r in pom if _to_utc(r["time"]) >= cutoff]
+        pom = [r for r in obs.fetch_powometer_v1() if _to_utc(r["time"]) >= cutoff]
+        depth = [r for r in pom if r["variable"] == "snow_depth"]
+        current_site = max(depth, key=lambda r: r["time"])["site_id"] if depth else None
+        records += [r for r in pom
+                    if r["variable"] != "snow_depth" or r["site_id"] == current_site]
     except Exception as exc:  # noqa: BLE001 - obs panels are best-effort
         print(f"WARNING: POW-O-METER fetch failed: {exc}", file=sys.stderr)
     # Collect then sort ascending by time (sources may return newest-first).

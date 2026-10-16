@@ -6,8 +6,11 @@ forecast runs and webcam frames, an un-logged observation is lost forever. This
 logger captures station #58 on a schedule and appends it to a Parquet log that
 accrues a verifiable record going forward.
 
-POW-O-METER (the top station) is *not* logged here: its Google Sheet already is
-a durable multi-year hub, so verification reads it directly from the sheet.
+POW-O-METER (the top station) is logged too, from powOmeter's published v1
+files, so verification never depends on a live third-party fetch. powOmeter
+serves its full history every time, so only hours not already in the log are
+appended. Temperature and humidity only: snow depth must stay split by site
+(see :data:`POWOMETER_LOG_VARIABLES`), which this log's columns don't carry.
 
 Layout (committed to git, mirrors the forecast log)::
 
@@ -28,28 +31,61 @@ from . import observations as obs
 from . import openmeteo as om
 
 OBS_COLUMNS = ["location", "time", "variable", "value", "source", "fetched_at"]
+# POW-O-METER variables that can be pooled across the station's sites.
+POWOMETER_LOG_VARIABLES = {"temperature_2m", "relative_humidity_2m"}
 
 
 def log_observations(*, data_dir: Path | None = None, days: int = 7) -> dict:
-    """Fetch the last ``days`` of station #58 obs and append one Parquet file.
-
-    Returns a summary dict. Station #58 only; POW-O-METER stays in its sheet.
-    """
+    """Fetch station #58 (last ``days``) and POW-O-METER's new hours, and append
+    one Parquet file. A source that fails is reported in ``failed`` and doesn't
+    stop the other. Returns a summary dict."""
     data_dir = data_dir or cfg.DATA_DIR
     fetched_at = om.utcnow()
     fetched_iso = om._iso(fetched_at)
 
-    records = obs.fetch_station_58(days=days)
-    for r in records:
-        r["source"] = "avalanche_canada"
-        r["fetched_at"] = fetched_iso
+    records: list[dict] = []
+    per_source: dict[str, int] = {}
+    errors: dict[str, str] = {}
 
+    try:
+        recs = obs.fetch_station_58(days=days)
+        for r in recs:
+            r["source"] = "avalanche_canada"
+        records += recs
+        per_source["avalanche_canada"] = len(recs)
+    except Exception as exc:  # noqa: BLE001 - keep the other source
+        errors["avalanche_canada"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        seen = _logged_keys(data_dir, location="pow_o_meter")
+        recs = [
+            {"location": r["location"], "time": r["time"], "variable": r["variable"],
+             "value": r["value"], "source": "powometer_v1"}
+            for r in obs.fetch_powometer_v1()
+            if r["variable"] in POWOMETER_LOG_VARIABLES and (r["time"], r["variable"]) not in seen
+        ]
+        records += recs
+        per_source["powometer_v1"] = len(recs)
+    except Exception as exc:  # noqa: BLE001 - keep the other source
+        errors["powometer_v1"] = f"{type(exc).__name__}: {exc}"
+
+    for r in records:
+        r["fetched_at"] = fetched_iso
     path = write_observation_run(records, data_dir=data_dir, fetched_at=fetched_at)
     return {
         "fetched_at": fetched_iso,
         "n_records": len(records),
+        "per_source": per_source,
+        "failed": errors,
         "path": str(path) if path else None,
     }
+
+
+def _logged_keys(data_dir: Path, *, location: str) -> set[tuple[str, str]]:
+    """``(time, variable)`` pairs already in the observation log for ``location``."""
+    return {(str(r["time"]), r["variable"])
+            for variable in POWOMETER_LOG_VARIABLES
+            for r in load_observation_log(data_dir, location=location, variable=variable)}
 
 
 def write_observation_run(
