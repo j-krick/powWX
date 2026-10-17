@@ -62,11 +62,23 @@ def _blend():
         for lid in ("station_58", "pow_o_meter")}}
 
 
+def _climate(data_dir, *, name, prefix):
+    """Small stand-ins for RONI (El Nino every 4th winter) and AHCCD Terrace."""
+    if name == "roni":
+        years = range(1989, 2027)
+        return pd.DataFrame({"season": ["NDJ"] * len(years), "year": list(years),
+                             "anom": [1.5 if y % 4 == 0 else 0.0 for y in years]})
+    months = pd.date_range("1960-01-01", "2020-12-01", freq="MS")
+    return pd.DataFrame({"date": months.strftime("%Y-%m"),
+                         "temp_mean": _seasonal(months) + 0.01 * (months.year - 1960)})
+
+
 @pytest.fixture
 def wired(monkeypatch):
     monkeypatch.setattr(bh.obs_logger, "load_observation_log", _obs_log)
     monkeypatch.setattr(bh.ra, "load_reanalysis", _reanalysis)
     monkeypatch.setattr(bh.obs, "fetch_powometer_v1", _top_snow)
+    monkeypatch.setattr(bh.cs, "load_latest", _climate)
 
     def settings(show=True):
         s = json.loads(json.dumps(SETTINGS))
@@ -130,3 +142,24 @@ def test_survives_missing_cache_blend_and_a_failing_station(wired, monkeypatch, 
     c = out["locations"]["station_58"]["charts"]["temperature_summer"]
     assert c["band"] is None and c["current"]["source"] == "measured"
     assert out["modelled_snowpack"] is None
+
+
+def test_long_view_and_el_nino_blocks(wired):
+    wired(show=True)
+    out = bh.build(today=TODAY, blend=_blend())
+    lv = out["long_view"]["kinds"]["winter"]
+    assert set(lv["series"]) == {"era5_land", "era5", "ahccd"}
+    assert {t["source"] for t in lv["trends_since"]} == {"era5_land", "era5", "ahccd"}
+    assert lv["statement"]["verdict"] in {"warming", "cooling", "no clear trend"}
+    assert lv["station"]["n_seasons"] >= 1
+    e = out["enso"]
+    assert e["current"]["phase"] == "neutral" and e["winter"] == "2026–27"
+    strong = next(c for c in e["classes"] if c["phase"] == "moderate/strong El Niño")
+    assert strong["n"] > 0
+    assert any("station_rank" in r for r in e["years"])
+
+
+def test_kill_switch_also_drops_station_ranks_from_el_nino(wired):
+    wired(show=False)
+    e = bh.build(today=TODAY, blend=_blend())["enso"]
+    assert all("station_rank" not in r for r in e["years"])

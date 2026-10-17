@@ -61,6 +61,11 @@ CREDITS = [
              "modified Copernicus information; neither the European Commission nor ECMWF is "
              "responsible for any use), via Open-Meteo.com",
      "url": "https://open-meteo.com/en/docs/historical-weather-api"},
+    {"text": "Terrace homogenized temperature: ECCC AHCCD (Open Government Licence – Canada)",
+     "url": "https://www.canada.ca/en/environment-climate-change/services/climate-change/"
+            "science-research-data/climate-trends-variability/adjusted-homogenized-canadian-data.html"},
+    {"text": "El Niño index (RONI): NOAA Climate Prediction Center",
+     "url": "https://www.cpc.ncep.noaa.gov/products/analysis_monitoring/enso/roni/"},
     {"text": "POW-O-METER data, Mount Remo Backcountry Society, CC BY 4.0",
      "url": "https://github.com/mount-remo-backcountry-society/powOmeter"},
     # MoTI's conditions (permission 2026-10-16): credit MoTI, and say it isn't

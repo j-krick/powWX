@@ -38,6 +38,7 @@ _netcompat.enable()
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from powwx import climate_sources as cs  # noqa: E402
 from powwx import config as cfg  # noqa: E402
 from powwx import history as hist  # noqa: E402
 from powwx import obs_logger  # noqa: E402
@@ -54,6 +55,9 @@ SNOW_BAND_WINDOW = 3         # ... pooling ±3 days per season
 SNOW_PCT_MIN_MEDIAN_CM = 20  # no "% of median" while the median is this shallow
 MODEL_SNOW_MIN_MEDIAN_M = 0.2
 CHIP_DAYS = 7
+TREND_START = 1980           # headline trends: the satellite era, when reanalysis is best constrained
+STATION_TREND_START = 2011   # #58's first full year
+APR1_WINDOW = ("03-25", "04-07")   # "1 April snowpack" = mean of these days (smooths one-day noise)
 DEC1 = 61                    # position of 1 Dec on the snow-season axis (1 Oct = 0)
 # Percentile classes for the "how unusual" chips (upper bounds, exclusive).
 CLASSES = [(10, "very cold"), (33, "cooler"), (67, "near normal"), (90, "warmer"),
@@ -393,10 +397,134 @@ def modelled_snowpack(snow_m: pd.Series, *, today, settings) -> dict | None:
 
 
 # --------------------------------------------------------------------------- #
+# Long view: trends and El Nino
+# --------------------------------------------------------------------------- #
+
+LONG_SOURCES = {
+    "era5_land": "ERA5-Land (modelled, ~10 km, at 740 m)",
+    "era5": "ERA5 (modelled, ~25 km, at 740 m)",
+    "ahccd": "Terrace, homogenized (measured, 217 m, ECCC AHCCD)",
+}
+
+
+def _guarded(name, fn, *args, **kwargs):
+    """Optional blocks: a failure is reported and leaves the block out."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - the rest of the section still builds
+        print(f"WARNING: {name} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+
+
+def long_view(daily_58: pd.Series | None, settings) -> dict | None:
+    """Winter, summer and annual mean temperature over the decades from three
+    sources, each as an anomaly from its own 1991-2020 mean, with Sen's-slope
+    trends since 1980 and the page's rule for calling it warming."""
+    e5l = ra.load_reanalysis(cfg.DATA_DIR, location="station_58", model="era5_land")
+    e5 = ra.load_reanalysis(cfg.DATA_DIR, location="station_58", model="era5")
+    ah = cs.load_latest(cfg.DATA_DIR, name="ahccd", prefix=cs.AHCCD_TERRACE)
+    daily = {k: df["temperature_2m_mean"] for k, df in (("era5_land", e5l), ("era5", e5))
+             if not df.empty and "temperature_2m_mean" in df}
+    monthly = (pd.Series(ah["temp_mean"].to_numpy(float), index=pd.to_datetime(ah["date"] + "-01"))
+               if ah is not None and len(ah) else None)
+    if not daily and monthly is None:
+        return None
+    y0, y1 = settings["reference_years"]
+    kinds = {}
+    for kind in ("winter", "summer", "year"):
+        series, recent, full = {}, [], []
+        for key in LONG_SOURCES:
+            if key == "ahccd":
+                s = hist.monthly_season_means(monthly, kind) if monthly is not None else pd.Series(dtype=float)
+            else:
+                s = hist.season_means(daily[key], kind) if key in daily else pd.Series(dtype=float)
+            if s.empty:
+                continue
+            ref = s[(s.index >= y0) & (s.index <= y1)]
+            anom = s - ref.mean()
+            series[key] = {"years": [int(y) for y in anom.index], "anomaly": _arr(anom, 2),
+                           "normal_mean": _r(ref.mean(), 2), "n_normal": len(ref)}
+            r = hist.sen_slope_ci(s.index[s.index >= TREND_START], s[s.index >= TREND_START])
+            f = hist.sen_slope_ci(s.index, s)
+            if r:
+                recent.append({"source": key, **r})
+            if f:
+                full.append({"source": key, **f})
+        station = None
+        if daily_58 is not None and not daily_58.empty:
+            st = hist.season_means(daily_58, kind)
+            st = st[st.index >= STATION_TREND_START]
+            station = {"n_seasons": len(st), "trend": hist.sen_slope_ci(st.index, st)}
+        # Two verdicts: over each record's full length, and since 1980 (where the
+        # measured Terrace record, ending 2020, may disagree with the reanalyses).
+        kinds[kind] = {"series": series, "trends_since": recent, "trends_full": full,
+                       "statement": hist.trend_statement(recent),
+                       "statement_full": hist.trend_statement(full), "station": station}
+    return {"trend_start": TREND_START, "normal_years": [y0, y1], "sources": LONG_SOURCES,
+            "kinds": kinds}
+
+
+def _apr1(daily: pd.Series) -> pd.Series:
+    """Mean over the 1 April window each year, keyed by year."""
+    md = daily.index.strftime("%m-%d")
+    sel = daily[(md >= APR1_WINDOW[0]) & (md <= APR1_WINDOW[1])].dropna()
+    return sel.groupby(sel.index.year).mean()
+
+
+def enso_card(snow_model: pd.Series | None, snow_cm_58: pd.Series | None, *, today,
+              show_values: bool) -> dict | None:
+    """Past winters by El Nino / La Nina phase (RONI, Nov-Jan): ERA5-Land winter
+    temperature with the warming trend removed, and whether the modelled 1 April
+    snowpack beat its long-term median; #58's 1 April rank where it has one."""
+    roni = cs.load_latest(cfg.DATA_DIR, name="roni", prefix="roni")
+    e5l = ra.load_reanalysis(cfg.DATA_DIR, location="station_58", model="era5_land")
+    if roni is None or e5l.empty:
+        return None
+    wi = hist.winter_index(roni)
+    t_anom = hist.detrend(hist.season_means(e5l["temperature_2m_mean"], "winter"))
+    snow = _apr1(snow_model.dropna()) if snow_model is not None else pd.Series(dtype=float)
+    snow_pct = 100 * snow / snow.median() if len(snow) else snow
+    st = _apr1(snow_cm_58) if snow_cm_58 is not None and len(snow_cm_58) else pd.Series(dtype=float)
+
+    rows = []
+    for y in sorted(set(wi.index) & (set(t_anom.index) | set(snow_pct.index))):
+        row = {"year": int(y), "label": hist.season_label(int(y), "winter"),
+               "index": _r(wi[y], 2), "phase": hist.enso_class(wi[y]),
+               "t_anom": _r(t_anom.get(y), 2), "snow_pct": _r(snow_pct.get(y), 0)}
+        if show_values and y in st.index and len(st) >= 5:
+            row["station_rank"], row["station_n"] = hist.rank_of(st[y], st.drop(y))
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    classes = []
+    for phase in hist.ENSO_CLASSES:
+        sub = df[df["phase"] == phase]
+        snow_ok = sub["snow_pct"].dropna()
+        classes.append({"phase": phase, "n": len(sub),
+                        "t_anom": _r(sub["t_anom"].mean(), 2) if len(sub) else None,
+                        "snow_above": int((snow_ok > 100).sum()), "snow_n": len(snow_ok)})
+    strong = df["phase"] == hist.ENSO_CLASSES[-1]
+    above = (df["snow_pct"] > 100).astype(float).where(df["snow_pct"].notna())
+    last = roni.iloc[-1]
+    upcoming = today.year + 1 if today.month >= 5 else today.year
+    return {
+        "index_name": "RONI",
+        "current": {"season": str(last["season"]), "year": int(last["year"]),
+                    "value": _r(float(last["anom"]), 2), "phase": hist.enso_class(float(last["anom"]))},
+        "winter": hist.season_label(upcoming, "winter"),
+        "classes": classes, "years": rows,
+        # Is the moderate/strong El Nino group different from all other winters
+        # by more than chance? (permutation test, two-sided)
+        "p_temp": _r(hist.permutation_pvalue(df.loc[strong, "t_anom"], df.loc[~strong, "t_anom"]), 3),
+        "p_snow": _r(hist.permutation_pvalue(above[strong], above[~strong]), 3),
+        "snow_window": list(APR1_WINDOW),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Assembly
 # --------------------------------------------------------------------------- #
 
-def build_location(loc: dict, *, today, settings, blend) -> tuple[dict, pd.Series | None]:
+def build_location(loc: dict, *, today, settings, blend) -> tuple[dict, dict]:
     lid = loc["id"]
     is_58 = lid == "station_58"
     show = bool(settings["station_58"]["show_station_values"]) if is_58 else True
@@ -449,8 +577,9 @@ def build_location(loc: dict, *, today, settings, blend) -> tuple[dict, pd.Serie
                                 settings=settings, show_values=show),
         "milestones": (milestones(snow_cm, today=today, show_values=show) if is_58 else None),
     }
-    snow_model = model.get("snow_depth_mean") if not model.empty else None
-    return out, snow_model
+    extras = {"snow_model": model.get("snow_depth_mean") if not model.empty else None,
+              "daily": daily, "snow_cm": snow_cm}
+    return out, extras
 
 
 def build(today: pd.Timestamp | None = None, blend: dict | None = None) -> dict:
@@ -458,15 +587,15 @@ def build(today: pd.Timestamp | None = None, blend: dict | None = None) -> dict:
     if today is None:
         today = pd.Timestamp.now(tz=hist.LOCAL_TZ).normalize().tz_localize(None)
     years = settings["reference_years"]
-    locations, snow_model = {}, None
+    locations, extras = {}, {}
     for loc in cfg.load_locations():
         try:
-            locations[loc["id"]], sm = build_location(loc, today=today, settings=settings, blend=blend)
-            if loc["id"] == "station_58":
-                snow_model = sm      # one ERA5-Land cell covers both stations
+            locations[loc["id"]], extras[loc["id"]] = build_location(
+                loc, today=today, settings=settings, blend=blend)
         except Exception as exc:  # noqa: BLE001 - one station shouldn't sink the build
             print(f"WARNING: history failed for {loc['id']}: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
+    b58 = extras.get("station_58", {})
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
         "today": _iso(today),
@@ -475,7 +604,12 @@ def build(today: pd.Timestamp | None = None, blend: dict | None = None) -> dict:
         "seasons": {k: {"label": v["label"], "months": list(v["months"])}
                     for k, v in hist.SEASONS.items()},
         "locations": locations,
-        "modelled_snowpack": modelled_snowpack(snow_model, today=today, settings=settings),
+        # One ERA5-Land cell covers both stations; the long view uses #58's point.
+        "modelled_snowpack": modelled_snowpack(b58.get("snow_model"), today=today, settings=settings),
+        "long_view": _guarded("long view", long_view, b58.get("daily"), settings),
+        "enso": _guarded("El Niño card", enso_card, b58.get("snow_model"), b58.get("snow_cm"),
+                         today=today,
+                         show_values=locations.get("station_58", {}).get("station_values", True)),
         "notes": (
             f"Normal = {years[0]}–{years[1]} (the standard 30-year period), from ERA5-Land "
             "reanalysis: modelled weather, reconstructed from observations, adjusted to "
@@ -497,6 +631,12 @@ def build(today: pd.Timestamp | None = None, blend: dict | None = None) -> dict:
              "url": "https://avalanche.ca/"},
             {"text": "POW-O-METER data, Mount Remo Backcountry Society, CC BY 4.0",
              "url": "https://github.com/mount-remo-backcountry-society/powOmeter"},
+            {"text": "Long view: ERA5 reanalysis via Open-Meteo.com (CC BY 4.0); Terrace homogenized "
+                     "temperature, ECCC AHCCD (Open Government Licence – Canada)",
+             "url": "https://www.canada.ca/en/environment-climate-change/services/climate-change/"
+                    "science-research-data/climate-trends-variability/adjusted-homogenized-canadian-data.html"},
+            {"text": "El Niño index (RONI): NOAA Climate Prediction Center",
+             "url": "https://www.cpc.ncep.noaa.gov/products/analysis_monitoring/enso/roni/"},
         ],
     }
 

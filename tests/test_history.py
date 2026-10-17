@@ -180,3 +180,59 @@ def test_step_change_finds_a_planted_shift_and_not_a_seasonal_artefact():
     assert s["lo"] < -0.3 < s["hi"] and s["hi"] < 0
     none = hist.step_change(model + rng.normal(0, 1, len(days)), model, "2021-10-15")
     assert none["lo"] < 0 < none["hi"]
+
+
+# --- long view: season means, trends, El Nino ------------------------------------------
+
+def test_season_means_need_most_days_and_skip_a_season_under_way():
+    days = pd.date_range("2020-11-01", "2022-01-15", freq="D")
+    daily = pd.Series(1.0, index=days)
+    daily = daily.drop(pd.date_range("2021-01-01", "2021-01-31"))      # winter 2021 loses 31 of 181 days
+    winters = hist.season_means(daily, "winter")
+    assert list(winters.index) == []                                  # 83 % < 90 %; 2022 still under way
+    assert list(hist.season_means(daily, "winter", min_coverage=0.8).index) == [2021]
+    assert list(hist.season_means(daily, "year").index) == [2021]     # 334/365 days; 2020, 2022 partial
+
+
+def test_monthly_season_means_need_every_month():
+    months = pd.date_range("1990-11-01", "1992-04-01", freq="MS")
+    monthly = pd.Series(np.arange(len(months), dtype=float), index=months).drop(pd.Timestamp("1992-02-01"))
+    w = hist.monthly_season_means(monthly, "winter")
+    assert list(w.index) == [1991] and w.loc[1991] == np.mean(range(6))
+
+
+def test_sen_slope_recovers_a_trend_and_admits_noise():
+    rng = np.random.default_rng(5)
+    years = np.arange(1950, 2026)
+    warm = 0.03 * (years - 1950) + rng.normal(0, 0.8, len(years))     # +0.3 degC/decade
+    t = hist.sen_slope_ci(years, warm)
+    assert t["lo"] < 0.3 < t["hi"] and t["lo"] > 0 and t["n"] == 76
+    short = hist.sen_slope_ci(years[-15:], rng.normal(0, 0.8, 15))
+    assert short["lo"] < 0 < short["hi"]                              # 15 noisy years can't tell
+    assert hist.sen_slope_ci(years[:5], warm[:5]) is None
+
+
+def test_trend_statement_says_warming_only_when_every_source_agrees():
+    a = {"slope": 0.3, "lo": 0.1, "hi": 0.5}
+    b = {"slope": 0.6, "lo": 0.4, "hi": 0.8}
+    c = {"slope": 0.2, "lo": -0.1, "hi": 0.5}
+    assert hist.trend_statement([a, b]) == {"verdict": "warming", "min_slope": 0.3, "max_slope": 0.6,
+                                            "n_sources": 2}
+    assert hist.trend_statement([a, b, c])["verdict"] == "no clear trend"
+    assert hist.trend_statement([None])["verdict"] == "unknown"
+
+
+def test_enso_classes_and_winter_index():
+    assert [hist.enso_class(v) for v in (-1.2, -1.0, -0.6, 0.0, 0.5, 0.99, 1.0, 2.3)] == [
+        "moderate/strong La Niña", "moderate/strong La Niña", "weak La Niña", "neutral",
+        "weak El Niño", "weak El Niño", "moderate/strong El Niño", "moderate/strong El Niño"]
+    idx = pd.DataFrame({"season": ["OND", "NDJ", "DJF"], "year": [2015, 2015, 2016], "anom": [2.4, 2.6, 2.5]})
+    assert hist.winter_index(idx).to_dict() == {2016: 2.6}           # NDJ 2015 -> winter 2015-16
+
+
+def test_detrend_and_permutation_test():
+    s = pd.Series(np.arange(10, dtype=float) * 0.5 + 3, index=range(2000, 2010))
+    assert np.allclose(hist.detrend(s), 0)
+    rng = np.random.default_rng(6)
+    assert hist.permutation_pvalue(rng.normal(1, 0.5, 15), rng.normal(0, 0.5, 30), n=2000) < 0.01
+    assert hist.permutation_pvalue(rng.normal(0, 1, 15), rng.normal(0, 1, 30), n=2000) > 0.05

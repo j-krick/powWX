@@ -309,6 +309,146 @@ def step_change(station: pd.Series, model: pd.Series, cut, *, nboot: int = 2000,
 
 
 # --------------------------------------------------------------------------- #
+# Long view: seasonal means, trends, El Nino
+# --------------------------------------------------------------------------- #
+
+def season_means(daily: pd.Series, kind: str, min_coverage: float = 0.9) -> pd.Series:
+    """Mean of each season (``kind`` from SEASONS, or "year" for calendar
+    years), indexed by end year; seasons with under ``min_coverage`` of their
+    days present (including one still under way) are left out."""
+    daily = daily.dropna()
+    if daily.empty:
+        return pd.Series(dtype=float)
+    if kind == "year":
+        g = daily.groupby(daily.index.year)
+        n_days = pd.Series({y: 366 if pd.Timestamp(y, 12, 31).dayofyear == 366 else 365 for y in g.groups})
+    else:
+        sel = daily[in_season(daily.index, kind)]
+        g = sel.groupby(season_end_year(sel.index, kind))
+        n_days = pd.Series({y: (season_start(y, kind) + pd.DateOffset(months=len(axis_dates(kind).month.unique()))
+                                - season_start(y, kind)).days for y in g.groups})
+    means, counts = g.mean(), g.size()
+    return means[counts >= min_coverage * n_days.reindex(means.index)].astype(float)
+
+
+def monthly_season_means(monthly: pd.Series, kind: str) -> pd.Series:
+    """Season means from monthly means (index = month-start Timestamps), only
+    for seasons with every month present; months weighted equally."""
+    monthly = monthly.dropna()
+    if kind == "year":
+        g = monthly.groupby(monthly.index.year)
+        need = 12
+    else:
+        sel = monthly[in_season(monthly.index, kind)]
+        g = sel.groupby(season_end_year(sel.index, kind))
+        need = len(axis_dates(kind).month.unique())
+    means, counts = g.mean(), g.size()
+    return means[counts == need].astype(float)
+
+
+def sen_slope_ci(years, values, *, block: int = 3, nboot: int = 2000, seed: int = 0,
+                 level: float = 0.9) -> dict | None:
+    """Sen's slope (median of all pairwise slopes; robust to outliers) per
+    decade, with a ``level`` range from a moving-block bootstrap of the
+    (year, value) pairs, so year-to-year persistence widens it honestly."""
+    x, y = np.asarray(years, float), np.asarray(values, float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    x, y = x[ok], y[ok]
+    if len(x) < 8:
+        return None
+
+    n, b = len(x), min(block, len(x))
+    i, j = np.triu_indices(n, 1)
+
+    def sen(xx, yy):
+        dx = xx[j] - xx[i]
+        m = dx != 0          # resampled years repeat
+        return np.median((yy[j] - yy[i])[m] / dx[m])
+
+    rng = np.random.default_rng(seed)
+    starts = np.arange(n - b + 1)
+    boots = []
+    for _ in range(nboot):
+        idx = np.concatenate([np.arange(s, s + b) for s in rng.choice(starts, int(np.ceil(n / b)))])[:n]
+        boots.append(sen(x[idx], y[idx]))
+    alpha = (1 - level) / 2
+    lo, hi = np.quantile(boots, [alpha, 1 - alpha])
+    return {"slope": round(float(sen(x, y)) * 10, 2), "lo": round(float(lo) * 10, 2),
+            "hi": round(float(hi) * 10, 2), "n": int(n), "start": int(x.min()), "end": int(x.max())}
+
+
+def trend_statement(trends: list[dict]) -> dict:
+    """The page's rule for words: "warming" only when every source's range is
+    above zero ("cooling" when all below); otherwise "no clear trend". Quotes
+    the spread of the sources' central slopes."""
+    trends = [t for t in trends if t]
+    if not trends:
+        return {"verdict": "unknown"}
+    slopes = [t["slope"] for t in trends]
+    if all(t["lo"] > 0 for t in trends):
+        verdict = "warming"
+    elif all(t["hi"] < 0 for t in trends):
+        verdict = "cooling"
+    else:
+        verdict = "no clear trend"
+    return {"verdict": verdict, "min_slope": min(slopes), "max_slope": max(slopes), "n_sources": len(trends)}
+
+
+ENSO_CLASSES = ["moderate/strong La Niña", "weak La Niña", "neutral", "weak El Niño",
+                "moderate/strong El Niño"]
+
+
+def enso_class(value: float) -> str | None:
+    """Phase from a Nino index value: El Nino from +0.5 degC, moderate or
+    stronger from +1.0 (and the same below zero for La Nina)."""
+    if value is None or not np.isfinite(value):
+        return None
+    if value <= -1.0:
+        return ENSO_CLASSES[0]
+    if value <= -0.5:
+        return ENSO_CLASSES[1]
+    if value < 0.5:
+        return ENSO_CLASSES[2]
+    if value < 1.0:
+        return ENSO_CLASSES[3]
+    return ENSO_CLASSES[4]
+
+
+def winter_index(index: pd.DataFrame, season: str = "NDJ") -> pd.Series:
+    """The index for each winter, keyed by the winter's end year: NDJ of year Y
+    (Nov Y - Jan Y+1, the usual peak) describes the winter ending Y+1."""
+    sel = index[index["season"] == season]
+    return pd.Series(sel["anom"].to_numpy(dtype=float), index=sel["year"].to_numpy() + 1)
+
+
+def detrend(series: pd.Series) -> pd.Series:
+    """Residuals from a straight-line fit over the index (years), so warming
+    doesn't masquerade as an El Nino signal in recent decades."""
+    s = series.dropna()
+    if len(s) < 3:
+        return s
+    coef = np.polyfit(s.index.to_numpy(float), s.to_numpy(), 1)
+    return s - np.polyval(coef, s.index.to_numpy(float))
+
+
+def permutation_pvalue(a, b, *, n: int = 5000, seed: int = 0) -> float | None:
+    """Two-sided p-value that groups ``a`` and ``b`` differ in mean only by
+    chance (labels shuffled ``n`` times)."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    a, b = a[np.isfinite(a)], b[np.isfinite(b)]
+    if len(a) < 3 or len(b) < 3:
+        return None
+    pooled, k = np.concatenate([a, b]), len(a)
+    obs = abs(a.mean() - b.mean())
+    rng = np.random.default_rng(seed)
+    hits = 0
+    for _ in range(n):
+        p = rng.permutation(pooled)
+        hits += abs(p[:k].mean() - p[k:].mean()) >= obs
+    return (hits + 1) / (n + 1)
+
+
+# --------------------------------------------------------------------------- #
 # Snow-season milestones
 # --------------------------------------------------------------------------- #
 

@@ -998,6 +998,7 @@ function makeSeasonChart(canvas, c, unit, todayPos) {
     },
     plugins: [todayLinePlugin(todayPos)],
   });
+  chart.$tab = true;      // destroyed when the season tab changes
   histCharts.push(chart);
   return chart;
 }
@@ -1181,7 +1182,7 @@ function chartPanel(title, unitLabel) {
 }
 
 function renderHistoryTab(h, ids, tab, root) {
-  histCharts.splice(0).forEach((ch) => ch.destroy());
+  histCharts.filter((c) => c.$tab).forEach((c) => { c.destroy(); histCharts.splice(histCharts.indexOf(c), 1); });
   root.innerHTML = "";
   for (const lid of ids) {
     const loc = h.locations[lid];
@@ -1278,12 +1279,282 @@ function buildHistory(h) {
   }
   body.append(bar, root);
   renderHistoryTab(h, ids, current, root);
+  if (h.long_view) body.appendChild(longViewBlock(h.long_view));
+  if (h.enso) body.appendChild(ensoBlock(h.enso));
 
   const a = (url, text) => `<a href="${url}" target="_blank" rel="noopener">${text}</a>`;
   const credits = document.createElement("ul");
   credits.className = "credits note";
   credits.innerHTML = (h.credits || []).map((c) => `<li>${a(c.url, c.text)}</li>`).join("");
   body.appendChild(credits);
+}
+
+// ---- long view: is it warming? ---------------------------------------------
+
+const LONG_COLORS = { era5_land: "#5ec8ff", era5: "#b05ce6", ahccd: "#ffffff" };
+const KIND_LABELS = { winter: "Winter (Nov–Apr)", summer: "Summer (May–Oct)", year: "Whole year" };
+const fmtSlope = (t) => `${signed(t.slope, 2)} °C/decade (${signed(t.lo, 2)} to ${signed(t.hi, 2)})`;
+
+// Warming stripes: one bar per year, blue = colder, red = warmer than normal.
+function drawStripes(canvas, years, anomalies) {
+  const vals = anomalies.filter((v) => v != null);
+  const sd = Math.sqrt(vals.reduce((a, v) => a + v * v, 0) / vals.length) || 1;
+  const w = canvas.clientWidth || 600, hgt = canvas.clientHeight || 40;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = w * dpr; canvas.height = hgt * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const bw = w / years.length;
+  anomalies.forEach((v, i) => {
+    if (v == null) return;
+    const t = Math.max(-1, Math.min(1, v / (2.6 * sd)));      // ±2.6 sd spans the scale
+    const r = t > 0 ? 255 : Math.round(255 * (1 + t));
+    const b = t < 0 ? 255 : Math.round(255 * (1 - t));
+    const g = Math.round(255 * (1 - Math.abs(t)));
+    ctx.fillStyle = `rgb(${Math.round(r * 0.85)},${Math.round(g * 0.85)},${Math.round(b * 0.85)})`;
+    ctx.fillRect(i * bw, 0, Math.ceil(bw), hgt);
+  });
+}
+
+function trendSentence(st, label, sources) {
+  if (!st || st.verdict === "unknown") return "";
+  if (st.verdict === "warming" || st.verdict === "cooling") {
+    return `<strong>${label}: ${st.verdict}</strong>. All ${st.n_sources} records agree, at ` +
+      `${signed(st.min_slope, 2)} to ${signed(st.max_slope, 2)} °C per decade.`;
+  }
+  return `<strong>${label}: no clear trend that all records agree on.</strong> ` +
+    sources.map((t) => `${t.label} ${signed(t.slope, 2)}`).join(", ") + " °C per decade.";
+}
+
+function renderLongKind(lv, kind, box) {
+  histCharts.filter((c) => c.$long).forEach((c) => { c.destroy(); histCharts.splice(histCharts.indexOf(c), 1); });
+  box.innerHTML = "";
+  const k = lv.kinds[kind];
+  const names = lv.sources;
+  const short = { era5_land: "ERA5-Land", era5: "ERA5", ahccd: "Terrace (measured)" };
+  const label = (src) => short[src] || src;
+  const since = k.trends_since.map((t) => ({ ...t, label: label(t.source) }));
+  const full = k.trends_full.map((t) => ({ ...t, label: label(t.source) }));
+
+  const text = document.createElement("div");
+  text.className = "hist-summary";
+  const st = k.station && k.station.trend;
+  text.innerHTML =
+    `<p>${trendSentence(k.statement_full, "Over each record's full length", full)}</p>` +
+    `<p>${trendSentence(k.statement, `Since ${lv.trend_start}`, since)}</p>` +
+    (st ? `<p class="note">Station #58 alone (${st.n} seasons since ${st.start}): ${fmtSlope(st)}, ` +
+      "far too short to tell. A trend needs a few decades of one consistent record.</p>" : "");
+  box.appendChild(text);
+
+  const era5l = k.series.era5_land;
+  if (era5l) {
+    const wrap = document.createElement("div");
+    wrap.className = "stripes";
+    const cv = document.createElement("canvas");
+    wrap.appendChild(cv);
+    const cap = document.createElement("div");
+    cap.className = "note";
+    cap.textContent = `${KIND_LABELS[kind]} temperature, ${era5l.years[0]}–${era5l.years[era5l.years.length - 1]}, ` +
+      `ERA5-Land (modelled): blue colder, red warmer than ${lv.normal_years.join("–")}. Early decades are less certain.`;
+    box.append(wrap, cap);
+    requestAnimationFrame(() => drawStripes(cv, era5l.years, era5l.anomaly));
+  }
+
+  const { panel, canvas, cw } = chartPanel(`${KIND_LABELS[kind]} temperature vs ${lv.normal_years.join("–")}`, "°C");
+  const legend = document.createElement("div");
+  legend.className = "legend";
+  const ds = [];
+  for (const [src, s] of Object.entries(k.series)) {
+    ds.push({ label: label(src), data: s.years.map((y, i) => ({ x: y, y: s.anomaly[i] })),
+      borderColor: LONG_COLORS[src], backgroundColor: LONG_COLORS[src],
+      borderWidth: src === "ahccd" ? 1.5 : 1.2, pointRadius: src === "ahccd" ? 1.5 : 0, tension: 0.1 });
+    legend.innerHTML += `<span><i style="background:${LONG_COLORS[src]}"></i>${names[src]}</span>`;
+    // Sen's line since the trend start: slope from the build, intercept = median(y - b x).
+    const t = k.trends_since.find((x) => x.source === src);
+    if (t) {
+      const b = t.slope / 10;
+      const pts = s.years.map((y, i) => [y, s.anomaly[i]]).filter(([y, v]) => y >= t.start && v != null);
+      const res = pts.map(([y, v]) => v - b * y).sort((p, q) => p - q);
+      const a = res[Math.floor(res.length / 2)];
+      ds.push({ label: `${label(src)} trend`, data: [{ x: t.start, y: a + b * t.start }, { x: t.end, y: a + b * t.end }],
+        borderColor: LONG_COLORS[src], borderWidth: 2, borderDash: [6, 4], pointRadius: 0, isTrend: true });
+    }
+  }
+  legend.innerHTML += `<span><i style="background:#9fb0c3"></i>dashed = trend since ${lv.trend_start}</span>`;
+  panel.insertBefore(legend, cw);
+  const chart = new Chart(canvas, {
+    type: "line", data: { datasets: ds },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: "nearest", axis: "x", intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { filter: (i) => !i.dataset.isTrend,
+          callbacks: { title: (it) => String(it[0].parsed.x),
+                       label: (c) => `${c.dataset.label}: ${signed(c.parsed.y, 2)} °C` } } },
+      scales: {
+        x: { type: "linear", min: Math.min(...Object.values(k.series).map((v) => v.years[0])),
+             max: Math.max(...Object.values(k.series).map((v) => v.years[v.years.length - 1])),
+             ticks: { color: "#9fb0c3", callback: (v) => String(v) }, grid: { color: "#243246" } },
+        y: { title: { display: true, text: "°C vs normal", color: "#9fb0c3" },
+             ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },
+      },
+    },
+  });
+  chart.$long = true;
+  histCharts.push(chart);
+
+  const table = document.createElement("div");
+  table.className = "table-scroll";
+  table.innerHTML = `<table class="fc milestones"><thead><tr><th>Record</th><th>Since ${lv.trend_start}</th>` +
+    `<th>Full record</th></tr></thead><tbody>` +
+    Object.keys(k.series).map((src) => {
+      const a = k.trends_since.find((t) => t.source === src), f = k.trends_full.find((t) => t.source === src);
+      return `<tr><td>${names[src]}</td><td>${a ? `${fmtSlope(a)}, ${a.start}–${a.end}` : "—"}</td>` +
+        `<td>${f ? `${fmtSlope(f)}, ${f.start}–${f.end}` : "—"}</td></tr>`;
+    }).join("") + `</tbody></table>`;
+  const note = document.createElement("p");
+  note.className = "note";
+  note.textContent = "Trend = Sen's slope (the median of all year-to-year slopes, robust to odd years); " +
+    "ranges are 90 %, from resampling blocks of years. 'Warming' is said only when every record's range is " +
+    "above zero. ERA5 and ERA5-Land are modelled and disagree about the recent rate; the Terrace record is " +
+    "measured and adjusted for station moves, but sits on the valley floor 25 km away and ends in 2020.";
+  panel.append(table, note);
+  box.appendChild(panel);
+}
+
+function longViewBlock(lv) {
+  const box = document.createElement("div");
+  box.className = "long-view";
+  box.innerHTML = `<div class="loc-head"><h2>Long view: is it warming here?</h2><span class="role">temperature, 1913 →</span></div>`;
+  const bar = document.createElement("div");
+  bar.className = "hist-tabs";
+  const inner = document.createElement("div");
+  for (const kind of ["winter", "summer", "year"]) {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = KIND_LABELS[kind]; b.dataset.kind = kind;
+    if (kind === "winter") b.classList.add("active");
+    b.onclick = () => {
+      bar.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x.dataset.kind === kind));
+      renderLongKind(lv, kind, inner);
+    };
+    bar.appendChild(b);
+  }
+  box.append(bar, inner);
+  renderLongKind(lv, "winter", inner);
+  return box;
+}
+
+// ---- El Niño this winter ----------------------------------------------------
+
+const PHASE_COLORS = {
+  "moderate/strong La Niña": "#3d7cc0", "weak La Niña": "#8fb8e0", "neutral": "#7d8ea0",
+  "weak El Niño": "#e8a77a", "moderate/strong El Niño": "#d0503f",
+};
+const SEASON_MONTHS = { DJF: "Dec–Feb", JFM: "Jan–Mar", FMA: "Feb–Apr", MAM: "Mar–May", AMJ: "Apr–Jun",
+  MJJ: "May–Jul", JJA: "Jun–Aug", JAS: "Jul–Sep", ASO: "Aug–Oct", SON: "Sep–Nov", OND: "Oct–Dec", NDJ: "Nov–Jan" };
+function pWords(p) {
+  if (p == null) return "too few winters to test";
+  if (p < 0.05) return `unlikely to be chance (p = ${p})`;
+  if (p < 0.1) return `borderline, it could be chance (p = ${p})`;
+  return `could easily be chance (p = ${p})`;
+}
+
+function ensoBlock(e) {
+  const box = document.createElement("div");
+  box.className = "long-view";
+  const cur = e.current, cls = e.classes.find((c) => c.phase === cur.phase);
+  const months = SEASON_MONTHS[cur.season] || cur.season;
+  box.innerHTML = `<div class="loc-head"><h2>El Niño and this winter</h2><span class="role">${e.winter}</span></div>`;
+  const text = document.createElement("div");
+  text.className = "hist-summary";
+  let p = `<p>The latest El Niño index (NOAA's ${e.index_name}, ${months} ${cur.year}) is ` +
+    `<strong>${signed(cur.value, 2)} °C</strong>: <strong style="color:${PHASE_COLORS[cur.phase]}">${cur.phase}</strong>.</p>`;
+  if (cls && cls.n) {
+    const isStrong = cur.phase === "moderate/strong El Niño";
+    p += `<p>In the <strong>${cls.n}</strong> past winters with a ${cur.phase} (by the Nov–Jan index), winters here averaged ` +
+      `<strong>${signed(cls.t_anom, 1)} °C</strong> relative to the warming trend, and the modelled 1 April snowpack was above ` +
+      `its long-term median in <strong>${cls.snow_above} of ${cls.snow_n}</strong>.` +
+      (isStrong ? ` Compared with all other winters, the temperature difference is ${pWords(e.p_temp)}; ` +
+        `the snow difference is ${pWords(e.p_snow)}.` : "") + `</p>`;
+    p += `<p class="note">It tilts the odds; it isn't a forecast. Each past winter below is one example, and they vary a lot.</p>`;
+  }
+  text.innerHTML = p;
+  box.appendChild(text);
+
+  const grid = document.createElement("div");
+  grid.className = "hist-grid";
+  // Scatter: Nov-Jan index vs modelled 1 April snow; current index as a dashed line.
+  const { panel, canvas, cw } = chartPanel("Spring snow vs El Niño index", "modelled 1 April snowpack, % of median");
+  const legend = document.createElement("div");
+  legend.className = "legend";
+  legend.innerHTML = Object.entries(PHASE_COLORS).map(([ph, c]) => `<span><i style="background:${c}"></i>${ph}</span>`).join("");
+  panel.insertBefore(legend, cw);
+  const pts = e.years.filter((r) => r.snow_pct != null && r.index != null);
+  const chart = new Chart(canvas, {
+    type: "scatter",
+    data: { datasets: Object.keys(PHASE_COLORS).map((ph) => ({
+      label: ph, data: pts.filter((r) => r.phase === ph).map((r) => ({ x: r.index, y: r.snow_pct, r })),
+      backgroundColor: PHASE_COLORS[ph], borderColor: PHASE_COLORS[ph], pointRadius: 4 })) },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: (c) => {
+          const r = c.raw.r;
+          return `${r.label}: index ${signed(r.index, 2)}, snow ${r.snow_pct} % of median, ` +
+            `winter ${signed(r.t_anom, 1)} °C vs trend` + (r.station_rank ? `, #58: ${ordinal(r.station_rank)} deepest of ${r.station_n}` : "");
+        } } } },
+      scales: {
+        x: { type: "linear", title: { display: true, text: "El Niño index, Nov–Jan (°C)", color: "#9fb0c3" },
+             ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },
+        y: { title: { display: true, text: "% of median", color: "#9fb0c3" },
+             ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },
+      },
+    },
+    plugins: [{ id: "nowLine", afterDatasetsDraw(ch) {
+      const { ctx, chartArea: { top, bottom }, scales: { x, y } } = ch;
+      ctx.save(); ctx.strokeStyle = "#9fb0c3"; ctx.setLineDash([3, 3]);
+      const px = x.getPixelForValue(cur.value);
+      ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, bottom); ctx.stroke();
+      const py = y.getPixelForValue(100);
+      ctx.beginPath(); ctx.moveTo(x.left, py); ctx.lineTo(x.right, py); ctx.stroke();
+      ctx.fillStyle = "#9fb0c3"; ctx.font = "10px system-ui"; ctx.fillText("now", px + 3, top + 10);
+      ctx.restore();
+    } }],
+  });
+  histCharts.push(chart);
+  grid.appendChild(panel);
+
+  const tp = document.createElement("div");
+  tp.className = "panel";
+  tp.innerHTML = "<h3>Past winters by phase</h3>";
+  const wrap = document.createElement("div");
+  wrap.className = "table-scroll";
+  wrap.innerHTML = `<table class="fc milestones"><thead><tr><th>Phase (Nov–Jan)</th><th>Winters</th>` +
+    `<th>Temp. vs trend</th><th>Snow above median</th></tr></thead><tbody>` +
+    e.classes.map((c) => `<tr${c.phase === cur.phase ? ' class="leader"' : ""}><td><span class="mdot" style="background:${PHASE_COLORS[c.phase]}"></span>${c.phase}</td>` +
+      `<td>${c.n}</td><td>${c.t_anom != null ? `${signed(c.t_anom, 1)} °C` : "—"}</td>` +
+      `<td>${c.snow_n ? `${c.snow_above} of ${c.snow_n}` : "—"}</td></tr>`).join("") + `</tbody></table>`;
+  tp.appendChild(wrap);
+  const same = e.years.filter((r) => r.phase === cur.phase);
+  if (same.length) {
+    const list = document.createElement("p");
+    list.className = "note";
+    list.innerHTML = `<strong>${cur.phase} winters:</strong> ` + same.map((r) =>
+      `${r.label} (${signed(r.t_anom, 1)} °C, snow ${r.snow_pct} %` +
+      (r.station_rank ? `, #58 ${ordinal(r.station_rank)} of ${r.station_n}` : "") + ")").join(" · ");
+    tp.appendChild(list);
+  }
+  const note = document.createElement("p");
+  note.className = "note";
+  note.textContent = `Winter = Nov–Apr mean temperature (ERA5-Land, modelled, with its straight-line warming ` +
+    `trend removed so recent warm winters don't pass for El Niño). Snow = ERA5-Land snow depth, ` +
+    `${e.snow_window.join(" to ")} mean, against its own long-term median (modelled, so only relative). ` +
+    `"#58 k of n" ranks the station's measured 1 April depth among its seasons (1 = deepest). ` +
+    "The p-value comes from reshuffling which winters count as El Niño thousands of times.";
+  tp.appendChild(note);
+  grid.appendChild(tp);
+  box.appendChild(grid);
+  return box;
 }
 
 // Fetch history.json only when the section comes near the screen, so it never

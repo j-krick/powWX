@@ -10,7 +10,9 @@ Two uses:
         python scripts/fetch_reanalysis.py --recent 90
 
 Each request is one chunk of at most --chunk-years years, written to its own
-file, so a failure loses one chunk and a rerun can fill it in.
+file, so a failure loses one chunk and a rerun can fill it in. Every run also
+refreshes NOAA's RONI (El Nino index) and ECCC's homogenized Terrace record
+(AHCCD), saving a new copy only when they changed (--no-indices skips them).
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from powwx import _netcompat  # noqa: E402
 
 _netcompat.enable()
 
+from powwx import climate_sources as cs  # noqa: E402
 from powwx import config as cfg  # noqa: E402
 from powwx import openmeteo as om  # noqa: E402
 from powwx import reanalysis as ra  # noqa: E402
@@ -42,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--models", default=",".join(ra.MODELS), help="comma-separated models")
     ap.add_argument("--chunk-years", type=int, default=10)
     ap.add_argument("--pause", type=float, default=10.0, help="seconds between requests")
+    ap.add_argument("--no-indices", action="store_true", help="skip RONI and AHCCD")
     args = ap.parse_args(argv)
 
     end = args.end or date.today().isoformat()
@@ -61,6 +65,16 @@ def main(argv: list[str] | None = None) -> int:
                     failed.append(f"{model} {loc['id']} {a}..{b}: {type(exc).__name__}: {exc}")
                     print(f"::warning title=reanalysis::{failed[-1]}", flush=True)
                 time.sleep(args.pause)
+    if not args.no_indices:
+        for name, prefix, fetch in [("roni", "roni", cs.fetch_roni),
+                                    ("ahccd", cs.AHCCD_TERRACE, cs.fetch_ahccd)]:
+            try:
+                path = cs.save_if_changed(fetch(), data_dir=cfg.DATA_DIR, name=name,
+                                          prefix=prefix, fetched_at=om.utcnow())
+                print(f"{name}: {'saved ' + str(path) if path else 'unchanged'}", flush=True)
+            except Exception as exc:  # noqa: BLE001 - the page keeps the last copy
+                print(f"::warning title=reanalysis::{name} not refreshed ({type(exc).__name__}: {exc})",
+                      flush=True)
     print(json.dumps({"written": len(written), "failed": failed}, indent=2))
     return 1 if failed and not written else 0
 

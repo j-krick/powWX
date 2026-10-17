@@ -150,6 +150,17 @@ unusual the last 7 and next 7 days are (percentiles), and snow milestones at #58
   fetch wins, ~1 MB). The full backfill runs **locally**:
   `python scripts/fetch_reanalysis.py --start 1940-01-01`; `reanalysis.yml`
   tops up the last 90 days weekly.
+- **Long view** (is it warming?): winter, summer and annual means from ERA5-Land,
+  ERA5 and ECCC's homogenized Terrace record (AHCCD, measured, 1913–2020), with
+  Sen's-slope trends and 90 % block-bootstrap ranges. The page says "warming"
+  only when every record's range is above zero. As of 2026-10: all three agree
+  over their full lengths (+0.14 to +0.51 °C/decade), but not since 1980 (the
+  reanalyses say +0.25 to +0.62, Terrace measured +0.04, range across zero).
+- **El Niño card**: past winters grouped by NOAA's RONI (Nov–Jan), with ERA5-Land
+  winter temperature (trend removed) and 1 April modelled snowpack, a
+  permutation test against all other winters, and #58's 1 April ranks.
+  RONI and AHCCD are refreshed by the same weekly job (`powwx/climate_sources.py`,
+  saved to `data/reanalysis/roni/` and `data/reanalysis/ahccd/` only when changed).
 
 ## Models logged
 
@@ -223,6 +234,10 @@ Climate normals: ERA5-Land and ERA5 reanalysis (Copernicus Climate Change
 Service), via Open-Meteo. Contains modified Copernicus Climate Change Service
 information; neither the European Commission nor ECMWF is responsible for any
 use that may be made of the information it contains.
+
+Terrace homogenized temperature: Environment and Climate Change Canada, Adjusted
+and Homogenized Canadian Climate Data (AHCCD), Open Government Licence – Canada.
+El Niño index (RONI): NOAA Climate Prediction Center.
 
 POW-O-METER data: Mount Remo Backcountry Society, CC BY 4.0.
 

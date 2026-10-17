@@ -2,7 +2,9 @@ name: reanalysis
 
 # Weekly top-up of the ERA5-Land / ERA5 cache in data/reanalysis/ (the normals
 # behind "Season in context"). Only the last 90 days: ERA5 arrives ~5 days late
-# and revises its first release, and the latest fetch wins on read. The full
+# and revises its first release, and the latest fetch wins on read. The same run
+# refreshes NOAA's RONI and ECCC's AHCCD Terrace record (saved only if changed).
+# The full
 # 1940/1950-> backfill is run LOCALLY (Open-Meteo throttles GitHub's runners):
 #   python scripts/fetch_reanalysis.py --start 1940-01-01
 on:
