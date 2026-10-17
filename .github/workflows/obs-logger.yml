@@ -29,7 +29,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e .
+        run: pip install -r requirements.txt && pip install --no-deps -e .
 
       - name: Run observation logger
         run: python scripts/run_obs_logger.py

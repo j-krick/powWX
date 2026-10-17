@@ -13,7 +13,9 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dateutil>=2.8",
     "boto3>=1.34",
+    "pillow>=10.0",   # webcam frames re-encoded as JPEG
 ]
+# CI installs the exact versions in requirements.txt (see the note there).
 
 [project.optional-dependencies]
 # truststore lets local runs use the OS cert store (needed behind corporate TLS

@@ -1,0 +1,21 @@
+# Exact versions every workflow installs (review F13), so a rebuild a year from
+# now reproduces today's numbers. These are what CI resolved from pyproject.toml
+# on 2026-10-16 (Python 3.12, ubuntu-latest), plus Pillow for the webcam grabber.
+# To upgrade: change versions here on purpose, run pytest, and note it in the
+# commit; pyproject.toml keeps only the loose lower bounds.
+boto3==1.43.114
+botocore==1.43.114
+certifi==2026.7.22
+charset_normalizer==3.5.2
+idna==3.20
+jmespath==1.1.0
+numpy==2.5.4
+pandas==3.0.6
+pillow==13.0.0
+pyarrow==26.0.0
+python-dateutil==2.9.0.post0
+pyyaml==6.0.3
+requests==2.34.2
+s3transfer==0.19.2
+six==1.17.0
+urllib3==2.8.0

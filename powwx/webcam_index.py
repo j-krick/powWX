@@ -5,7 +5,12 @@ The browser can't list a private bucket, so the viewer build lists frames here
 newest frame and steps backwards through history, building image URLs as
 ``{public_base_url}/{key}``.
 
-Frame keys follow ``camera{n}/YYYY-MM-DD/HHMMZ.png`` (see :mod:`powwx.webcam`).
+Frame keys follow ``camera{n}/YYYY-MM-DD/HHMMZ.jpg`` (``.png`` before 2026-10-17;
+see :mod:`powwx.webcam`).
+
+To keep ``webcams.json`` from growing without bound (review F16), the index lists
+every frame from the last ``RECENT_DAYS`` and one frame per day before that (the
+one nearest local midday). Older frames stay in R2; only the index is thinned.
 """
 
 from __future__ import annotations
@@ -15,15 +20,17 @@ import os
 from .webcam import CAMERAS
 
 CAMERA_LABELS = {"camera1": "Chairlift", "camera2": "Parking lot"}
+RECENT_DAYS = 30
+KEYFRAME_UTC_MINUTES = 20 * 60  # 20:00 UTC = midday in BC (12:00 PST / 13:00 PDT)
 
 
 def _key_to_time(key: str) -> str | None:
-    """camera1/2026-05-29/1932Z.png -> 2026-05-29T19:32Z (None if unparseable)."""
+    """camera1/2026-05-29/1932Z.jpg -> 2026-05-29T19:32Z (None if unparseable)."""
     parts = key.split("/")
     if len(parts) != 3:
         return None
     _, day, fname = parts
-    hhmm = fname.removesuffix(".png").removesuffix("Z")
+    hhmm = fname.removesuffix(".jpg").removesuffix(".png").removesuffix("Z")
     if len(hhmm) != 4 or not hhmm.isdigit():
         return None
     return f"{day}T{hhmm[:2]}:{hhmm[2:]}Z"
@@ -41,10 +48,37 @@ def _list_camera_frames(client, bucket: str, camera: str, max_frames: int | None
                 continue
             frames.append({"key": key, "time": ts})
     # Keys sort chronologically (zero-padded date + HHMM), so reverse = newest first.
-    frames.sort(key=lambda f: f["key"], reverse=True)
+    # Sort on the time, not the key, so .png and .jpg frames interleave correctly.
+    frames.sort(key=lambda f: f["time"], reverse=True)
+    frames = thin_frames(frames)
     if max_frames is not None:
         frames = frames[:max_frames]
     return frames
+
+
+def thin_frames(frames: list[dict], *, recent_days: int = RECENT_DAYS) -> list[dict]:
+    """Keep every frame from the ``recent_days`` before the newest one, and one
+    frame per day before that (nearest KEYFRAME_UTC_MINUTES). Input and output
+    are newest first."""
+    if not frames:
+        return frames
+    from datetime import date, timedelta
+
+    newest_day = date.fromisoformat(frames[0]["time"][:10])
+    cutoff = (newest_day - timedelta(days=recent_days)).isoformat()
+    recent = [f for f in frames if f["time"][:10] > cutoff]
+    keyframes: dict[str, dict] = {}
+    for f in frames:
+        day = f["time"][:10]
+        if day > cutoff:
+            continue
+        minutes = int(f["time"][11:13]) * 60 + int(f["time"][14:16])
+        best = keyframes.get(day)
+        if best is None or abs(minutes - KEYFRAME_UTC_MINUTES) < best["_d"]:
+            keyframes[day] = {**f, "_d": abs(minutes - KEYFRAME_UTC_MINUTES)}
+    older = [{k: v for k, v in f.items() if k != "_d"}
+             for _, f in sorted(keyframes.items(), reverse=True)]
+    return recent + older
 
 
 def base_cameras() -> dict:

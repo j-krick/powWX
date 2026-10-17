@@ -3,16 +3,22 @@
 The public URLs only ever hold the *latest* frame, so history exists only if we
 capture now. Frames go to object storage (never git). Cameras run seasonally and
 go dark off-season; a missing/non-image response is skipped, not an error.
+
+Frames are stored as JPEG (quality 70, at most 960 px wide): about a tenth of
+the source PNG, so the archive stays inside R2's free tier for years (review F16).
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 from datetime import datetime, timezone
 
 import requests
 
 REQUEST_TIMEOUT = 30
+JPEG_MAX_WIDTH = 960
+JPEG_QUALITY = 70
 
 CAMERAS = {
     "camera1": "https://storage.googleapis.com/shames_webcam_images/camera1-latest-timestamp.png",
@@ -21,10 +27,22 @@ CAMERAS = {
 
 
 def frame_key(camera: str, now: datetime) -> str:
-    """R2 object key: camera1/2026-05-29/1430Z.png"""
+    """R2 object key: camera1/2026-05-29/1430Z.jpg (frames before 2026-10-17 are .png)."""
     day = now.strftime("%Y-%m-%d")
     stamp = now.strftime("%H%MZ")
-    return f"{camera}/{day}/{stamp}.png"
+    return f"{camera}/{day}/{stamp}.jpg"
+
+
+def to_jpeg(image_bytes: bytes) -> bytes:
+    """Re-encode a frame as JPEG, at most JPEG_MAX_WIDTH wide. Deterministic for
+    the same input, so the unchanged-frame check still works on the result."""
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    im.thumbnail((JPEG_MAX_WIDTH, JPEG_MAX_WIDTH * 10))  # width-bound, keeps aspect
+    out = io.BytesIO()
+    im.save(out, "JPEG", quality=JPEG_QUALITY, optimize=True)
+    return out.getvalue()
 
 
 def _newest_etag(r2_client, bucket: str, camera: str) -> str | None:
@@ -66,10 +84,17 @@ def grab_and_upload(*, r2_client, bucket: str, now: datetime | None = None) -> l
             results.append(result)
             continue
 
+        try:
+            data = to_jpeg(resp.content)
+        except Exception as exc:  # noqa: BLE001 - a corrupt frame is skipped, not fatal
+            result["reason"] = f"skip undecodable image: {exc}"
+            results.append(result)
+            continue
+
         # Skip storing a frame identical to the last one we kept. A seasonally-off
         # cam serves the same stale image for weeks; without this we'd archive
         # hundreds of duplicates and clutter the viewer's history slider.
-        new_md5 = hashlib.md5(resp.content).hexdigest()
+        new_md5 = hashlib.md5(data).hexdigest()
         if new_md5 == _newest_etag(r2_client, bucket, camera):
             result["reason"] = "skip unchanged (identical to latest stored frame)"
             results.append(result)
@@ -77,7 +102,7 @@ def grab_and_upload(*, r2_client, bucket: str, now: datetime | None = None) -> l
 
         key = frame_key(camera, now)
         upload_bytes(
-            r2_client, bucket=bucket, key=key, data=resp.content, content_type="image/png"
+            r2_client, bucket=bucket, key=key, data=data, content_type="image/jpeg"
         )
         result.update(uploaded=True, key=key)
         results.append(result)
