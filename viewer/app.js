@@ -928,7 +928,8 @@ function buildFooter(meta) {
   f.innerHTML =
     `<p class="disclaimer"><strong>Not a forecast.</strong> powWX is an experimental, volunteer-run ` +
     `tool; its data may be wrong, late or missing. Do not rely on it alone for decisions in ` +
-    `avalanche terrain. Check the ${a(AVALANCHE_FORECAST_URL, "avalanche forecast at avalanche.ca")}.</p>` +
+    `avalanche terrain. Check the ${a(AVALANCHE_FORECAST_URL, "avalanche forecast at avalanche.ca")}. ` +
+    `BC MoTI is not liable for the accuracy of its station data.</p>` +
     `<ul class="credits">${credits}</ul>` +
     `<p class="note">${meta.station_note || ""}</p>` +
     `<div class="links">Cross-check: ${links}</div>`;

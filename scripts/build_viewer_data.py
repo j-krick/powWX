@@ -59,7 +59,10 @@ CREDITS = [
     {"text": "Weather data by Open-Meteo.com (CC BY 4.0)", "url": "https://open-meteo.com/"},
     {"text": "POW-O-METER data, Mount Remo Backcountry Society, CC BY 4.0",
      "url": "https://github.com/mount-remo-backcountry-society/powOmeter"},
-    {"text": "Station #58: BC Ministry of Transportation and Infrastructure, via Avalanche Canada",
+    # MoTI's conditions (permission 2026-10-16): credit MoTI, and say it isn't
+    # liable for accuracy (the footer disclaimer carries that line).
+    {"text": "Station #58: BC Ministry of Transportation and Infrastructure (used with "
+             "permission), via Avalanche Canada",
      "url": "https://avalanche.ca/"},
 ]
 

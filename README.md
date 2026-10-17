@@ -190,3 +190,12 @@ Set these repo secrets for Cloudflare R2 (free tier: 10 GB + zero egress):
 Weather data by [Open-Meteo](https://open-meteo.com/) under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — attribution required;
 keep this notice on any public viewer. Code is MIT licensed.
+
+POW-O-METER data: Mount Remo Backcountry Society, CC BY 4.0.
+
+Station #58 data: BC Ministry of Transportation and Infrastructure (MoTI), via
+Avalanche Canada and PCIC. MoTI's station data are "Access Only"; written
+permission to use them in powWX and powOmeter was granted on 2026-10-16 and is
+on file with MRBS (see powOmeter's `docs/permissions/`). Conditions: credit BC
+MoTI wherever the data are shown, and state that MoTI is not liable for their
+accuracy.

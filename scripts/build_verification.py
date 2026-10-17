@@ -392,8 +392,10 @@ def build() -> tuple[dict, dict, dict]:
             "forecast, so read GFS results with caution."
         ),
         "attribution": "Forecasts by Open-Meteo.com (CC BY 4.0). Actuals: POW-O-METER data, "
-                       "Mount Remo Backcountry Society, CC BY 4.0 (top) and BC MoTI station "
-                       "#58 via Avalanche Canada (bottom).",
+                       "Mount Remo Backcountry Society, CC BY 4.0 (top) and BC Ministry of "
+                       "Transportation and Infrastructure station #58, used with permission, "
+                       "via Avalanche Canada (bottom); MoTI is not liable for the accuracy "
+                       "of its data.",
     }
     blend_payload = {
         "generated_at": payload["generated_at"],
