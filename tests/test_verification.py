@@ -188,3 +188,14 @@ def test_paired_comparison_uses_only_shared_forecasts():
     c = ver.paired_comparison(a, b)
     assert c["n"] == 10 * 24 and c["days"] == 10
     assert c["mae_a"] == 1.0 and c["mae_b"] == 2.0 and c["pct"] == 50.0
+
+
+def test_duplicate_observation_hours_keep_the_latest_fetch():
+    # Review F12: a re-logged hour with a revised value takes the later value,
+    # not an average of the two.
+    obs = ver.observations_frame([
+        {"time": "2025-01-02T00:00:00Z", "value": 1.0},    # earlier fetch
+        {"time": "2025-01-02T01:00:00Z", "value": 5.0},
+        {"time": "2025-01-02T00:00:00Z", "value": 3.0},    # later fetch, revised
+    ])
+    assert obs["observed"].tolist() == [3.0, 5.0]

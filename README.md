@@ -112,8 +112,8 @@ python scripts/import_pcds.py ~/Downloads/pcds_data   # appends to data/observat
 `powwx/observations.py:parse_pcds_csv` maps the PCDS native fields to powWX
 variables. Note PCDS timestamps are **local Pacific time *with* DST**
 (`America/Vancouver`), verified to the second against the AvCan feed — a fixed
-−8 offset would be an hour wrong all summer. Re-importing is safe (duplicate
-hours collapse on read).
+−8 offset would be an hour wrong all summer. Re-importing is safe: when an hour
+is logged more than once, the most recently fetched value wins on read.
 
 **Observation logger** — `powwx/obs_logger.py` + `scripts/run_obs_logger.py`,
 append-only to `data/observations/obs_date=YYYY-MM-DD/*.parquet`, committed by
@@ -148,6 +148,10 @@ plus `source` and `fetched_at` provenance.
 - **Never overwrite.** Each run writes a new file. Keeping the same `valid_time`
   across many `issued_at` (the 3-days-out vs 1-day-out forecast) is the entire
   basis of verification.
+- **Duplicates on read: the last file wins.** If the same `(model, issued_at,
+  valid_time)` appears in more than one file (e.g. a re-run backfill), the
+  verification keeps the one from the latest file in name order; files are never
+  edited. Observations work the same way: the latest fetch of an hour wins.
 
 Layout: `data/forecasts/issued_date=YYYY-MM-DD/<run>.parquet` (committed to git).
 

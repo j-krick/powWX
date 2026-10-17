@@ -89,15 +89,16 @@ def observations_frame(records: list[dict]) -> pd.DataFrame:
     """Normalise long obs records ``{time, value, ...}`` to a sorted UTC frame
     ``[time, observed]`` for a single station+variable, ready for the asof join.
 
-    Duplicate timestamps (re-logged obs) collapse to their mean.
+    Duplicate timestamps (re-logged obs) keep the *last* record. The observation
+    log is read in fetch order, so the latest fetch wins rather than an average of
+    disagreeing values (review F12).
     """
     if not records:
         return pd.DataFrame(columns=["time", "observed"])
     df = pd.DataFrame.from_records(records)
     df["time"] = pd.to_datetime(df["time"], utc=True)
     df = (
-        df.groupby("time", as_index=False)["value"]
-        .mean()
+        df.drop_duplicates(subset="time", keep="last")[["time", "value"]]
         .rename(columns={"value": "observed"})
         .sort_values("time")
         .reset_index(drop=True)

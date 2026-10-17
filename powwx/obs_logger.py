@@ -115,7 +115,8 @@ def load_observation_log(
     data_dir: Path, *, location: str, variable: str
 ) -> list[dict]:
     """Read the committed observation log for one ``(location, variable)`` as
-    long records ``{location, time, variable, value}`` (deduped downstream)."""
+    long records ``{location, time, variable, value}``, in fetch order (files
+    are named by fetch time), so downstream dedup can let the latest fetch win."""
     import glob
 
     import pandas as pd

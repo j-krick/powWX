@@ -353,8 +353,10 @@ def build() -> tuple[dict, dict, dict]:
                 "label": loc["name"],
                 "elevation_m": loc["elevation_m"],
                 "role": loc["role"],
-                "obs_source": ("POW-O-METER via powOmeter v1 (logged). Since 2026-10-16 the "
-                               "top station uses powOmeter's corrected UTC times; earlier "
+                "obs_source": ("POW-O-METER via powOmeter v1 (logged). Readings are "
+                               "interpolated onto the hour, which lowers every model's "
+                               "error here by a few per cent. Since 2026-10-16 the top "
+                               "station uses powOmeter's corrected UTC times; earlier "
                                "top-station numbers, from the Google Sheet, are superseded")
                               if lid == "pow_o_meter"
                               else "Avalanche Canada station #58 (logged)",
@@ -384,7 +386,10 @@ def build() -> tuple[dict, dict, dict]:
             "uncertainty comes from resampling whole days, and a model is named most "
             f"accurate only if it leads by more than {ver.TIE_SE:g} standard errors, "
             "otherwise it's a tie. The powWX blend is a bias-corrected, "
-            "inverse-MAE-weighted consensus, validated walk-forward (out-of-sample)."
+            "inverse-MAE-weighted consensus, validated walk-forward (out-of-sample). "
+            "Scores before 2026-05-29 come from Open-Meteo's archive of past runs; for "
+            "GFS (Seamless) that archive may combine GFS differently from the live "
+            "forecast, so read GFS results with caution."
         ),
         "attribution": "Forecasts by Open-Meteo.com (CC BY 4.0). Actuals: POW-O-METER data, "
                        "Mount Remo Backcountry Society, CC BY 4.0 (top) and BC MoTI station "
