@@ -1,0 +1,50 @@
+name: reanalysis
+
+# Weekly top-up of the ERA5-Land / ERA5 cache in data/reanalysis/ (the normals
+# behind "Season in context"). Only the last 90 days: ERA5 arrives ~5 days late
+# and revises its first release, and the latest fetch wins on read. The full
+# 1940/1950-> backfill is run LOCALLY (Open-Meteo throttles GitHub's runners):
+#   python scripts/fetch_reanalysis.py --start 1940-01-01
+on:
+  schedule:
+    - cron: "45 3 * * 1"   # Mondays
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: forecast-data       # shared with the loggers to serialise pushes
+  cancel-in-progress: false
+
+jobs:
+  topup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt && pip install --no-deps -e .
+
+      # A failed top-up only warns: the page keeps working on the cache it has.
+      - name: Fetch the last 90 days
+        continue-on-error: true
+        run: python scripts/fetch_reanalysis.py --recent 90
+
+      - name: Commit new reanalysis data
+        run: |
+          git config user.name  "powwx-bot"
+          git config user.email "actions@github.com"
+          git add data/reanalysis
+          if git diff --cached --quiet; then
+            echo "No new reanalysis data to commit."
+          else
+            git commit -m "reanalysis: $(date -u +%Y-%m-%dT%H:%MZ)"
+            git pull --rebase
+            git push
+          fi

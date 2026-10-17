@@ -57,6 +57,10 @@ LINKS = [
 # POW-O-METER wording is the one its LICENSE-DATA.md asks for).
 CREDITS = [
     {"text": "Weather data by Open-Meteo.com (CC BY 4.0)", "url": "https://open-meteo.com/"},
+    {"text": "Climate normals: ERA5-Land reanalysis, Copernicus Climate Change Service (contains "
+             "modified Copernicus information; neither the European Commission nor ECMWF is "
+             "responsible for any use), via Open-Meteo.com",
+     "url": "https://open-meteo.com/en/docs/historical-weather-api"},
     {"text": "POW-O-METER data, Mount Remo Backcountry Society, CC BY 4.0",
      "url": "https://github.com/mount-remo-backcountry-society/powOmeter"},
     # MoTI's conditions (permission 2026-10-16): credit MoTI, and say it isn't

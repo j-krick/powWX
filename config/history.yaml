@@ -1,0 +1,25 @@
+# "Season in context": scripts/build_history.py -> viewer/data/history.json.
+
+# The "normal" the bands and percentiles compare with: the WMO standard normal
+# period, from ERA5-Land reanalysis adjusted to each station (the stations' own
+# records are far shorter than 30 years).
+reference_years: [1991, 2020]
+reference_model: era5_land
+pool_window_days: 7     # each date's climatology pools the dates within ±7 days
+running_mean_days: 7    # season charts plot temperature as a trailing 7-day mean
+
+# Fit each station's adjustment only on data from this date, when its readings
+# shifted. #58 reads ~0.3 °C cooler relative to ERA5-Land since its June-Oct 2021
+# outage (checked 2026-10-16; maybe an equipment change), so the band is matched
+# to the current readings. The build reports the size of the step on the page.
+adjust_since:
+  station_58: "2021-10-15"
+
+station_58:
+  # Kill switch for BC MoTI station #58's own values in this section (this
+  # season's line, past seasons, the measured snow band, milestone dates).
+  # Written permission granted 2026-10-16 for powWX and powOmeter. Set false to
+  # take them off the page: the section then falls back to ERA5-Land plus
+  # derived numbers (percentiles, ranks). true needs `permission` filled in.
+  show_station_values: true
+  permission: "powOmeter docs/permissions/moti-2026-10.md"

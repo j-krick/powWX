@@ -12,6 +12,9 @@ on:
       - "powwx/**"
       - "scripts/build_viewer_data.py"
       - "scripts/build_verification.py"
+      - "scripts/build_history.py"
+      - "data/reanalysis/**"
+      - "config/history.yaml"
   schedule:
     - cron: "30 0,6,12,18 * * *"   # ~30 min after each forecast-logger run
   workflow_dispatch: {}
@@ -30,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       verify_outcome: ${{ steps.verify.outcome }}
+      history_outcome: ${{ steps.history.outcome }}
     steps:
       - uses: actions/checkout@v6
 
@@ -57,6 +61,13 @@ jobs:
         continue-on-error: true
         run: python scripts/build_verification.py
 
+      # "Season in context" is optional too, and runs after verification so the
+      # forecast days can use the fresh blend.json.
+      - name: Build season history
+        id: history
+        continue-on-error: true
+        run: python scripts/build_history.py
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
@@ -72,13 +83,18 @@ jobs:
       - id: deploy
         uses: actions/deploy-pages@v5
 
-  # Surface a failed verification step as a failed run (and its email) once the
-  # rest of the page has deployed.
+  # Surface a failed verification or history step as a failed run (and its
+  # email) once the rest of the page has deployed.
   verification-status:
     needs: [build, deploy]
-    if: ${{ needs.build.outputs.verify_outcome == 'failure' }}
+    if: ${{ needs.build.outputs.verify_outcome == 'failure' || needs.build.outputs.history_outcome == 'failure' }}
     runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "::error::Verification build failed; the page deployed without verification.json."
+          if [ "${{ needs.build.outputs.verify_outcome }}" = "failure" ]; then
+            echo "::error::Verification build failed; the page deployed without verification.json."
+          fi
+          if [ "${{ needs.build.outputs.history_outcome }}" = "failure" ]; then
+            echo "::error::History build failed; the page deployed without history.json."
+          fi
           exit 1

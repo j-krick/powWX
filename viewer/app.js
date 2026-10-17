@@ -848,6 +848,463 @@ function buildVerification(ver) {
   }
 }
 
+// ---- season in context (history) -------------------------------------------
+// "Is this season unusual?" Reads history.json (scripts/build_history.py): per
+// station, season charts on a fixed day-of-season axis (so, like verification,
+// they stay OUT of the time-axis pan/zoom sync), the how-unusual chips, and
+// snow milestones. Loaded only when the section scrolls near the screen.
+
+const HIST_COLORS = {
+  band90: "rgba(94,200,255,0.10)", band50: "rgba(94,200,255,0.22)",
+  median: "#7d8ea0", past: "rgba(159,176,195,0.22)", prev: "#5ec8ff", avg: "#c9d4e0",
+};
+// Percentile classes for daily temperatures (upper bound exclusive), as in build_history.py.
+const PCT_CLASSES = [[10, "very cold", "pc-vcold"], [33, "cooler", "pc-cool"],
+  [67, "near normal", "pc-norm"], [90, "warmer", "pc-warm"], [101, "very warm", "pc-vwarm"]];
+const histCharts = [];
+
+function pctClass(p) {
+  const hit = PCT_CLASSES.find(([below]) => p < below) || PCT_CLASSES[PCT_CLASSES.length - 1];
+  return { label: hit[1], cls: hit[2] };
+}
+function ordinal(n) {
+  const s = ["th", "st", "nd", "rd"], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+// Day `pos` of a season axis starting on ISO date `start`, e.g. "Nov 14".
+function axisDay(start, pos, opts) {
+  const d = new Date(start + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + pos);
+  return d.toLocaleDateString("en-CA", { timeZone: "UTC", month: "short", day: "numeric", ...(opts || {}) });
+}
+function fmtDay(iso, opts) {
+  return new Date(iso + "T12:00:00Z").toLocaleDateString("en-CA", { timeZone: "UTC", ...opts });
+}
+function daysBetween(a, b) {
+  return Math.round((new Date(b + "T12:00:00Z") - new Date(a + "T12:00:00Z")) / DAY);
+}
+const signed = (x, nd = 1) => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(nd)}`;
+
+// Dashed vertical line at today's position on a season chart.
+function todayLinePlugin(pos) {
+  return {
+    id: "todayLine",
+    afterDatasetsDraw(chart) {
+      if (pos == null) return;
+      const { ctx, chartArea: { top, bottom }, scales: { x } } = chart;
+      const px = x.getPixelForValue(pos);
+      ctx.save();
+      ctx.strokeStyle = "#9fb0c3"; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, bottom); ctx.stroke();
+      ctx.fillStyle = "#9fb0c3"; ctx.font = "10px system-ui"; ctx.fillText("today", px + 3, top + 10);
+      ctx.restore();
+    },
+  };
+}
+
+// One season chart: normal band (10-90 % light, 25-75 % dark, median dashed),
+// past seasons (faint; last season highlighted), station average, this season
+// (bold; dashed if modelled) and the forecast extension (gold, with its band).
+// Every dataset spans the whole axis so the "index" tooltip lines up.
+function makeSeasonChart(canvas, c, unit, todayPos) {
+  const n = c.n_days, nd = unit === "°C" ? 1 : 0;
+  const full = (vals) => vals.map((y, i) => ({ x: i, y }));
+  const ds = [];
+  const band = (key, label, extra) => ({ label, data: full(c.band[key]), histId: "band", isBand: true,
+    borderWidth: 0, pointRadius: 0, tension: 0.2, spanGaps: false, ...extra });
+  if (c.band) {
+    ds.push(band("p90", "p90", { fill: false }),
+      band("p10", "p10", { fill: "-1", backgroundColor: HIST_COLORS.band90 }),
+      band("p75", "p75", { fill: false }),
+      band("p25", "p25", { fill: "-1", backgroundColor: HIST_COLORS.band50 }));
+    ds.push({ label: "Normal (median)", data: full(c.band.p50), histId: "band",
+      borderColor: HIST_COLORS.median, borderWidth: 1, borderDash: [4, 3], pointRadius: 0, tension: 0.2 });
+  }
+  const past = [...(c.past || [])].sort((a, b) => a.year - b.year);
+  const prev = past.length ? past[past.length - 1] : null;
+  for (const p of past) {
+    const isPrev = p === prev;
+    ds.push({ label: isPrev ? `Last season (${p.label})` : p.label, data: full(p.values),
+      histId: isPrev ? "prev" : "past", borderColor: isPrev ? HIST_COLORS.prev : HIST_COLORS.past,
+      borderWidth: isPrev ? 1.5 : 1, pointRadius: 0, tension: 0.2, spanGaps: false, order: isPrev ? 2 : 4 });
+  }
+  if (c.average) {
+    ds.push({ label: `Station average (${c.average.n_seasons} seasons)`, data: full(c.average.values),
+      histId: "avg", borderColor: HIST_COLORS.avg, borderWidth: 1.5, borderDash: [1, 3],
+      pointRadius: 0, tension: 0.2, spanGaps: false, order: 3 });
+  }
+  if (c.forecast) {
+    const arr = (key) => {
+      const a = new Array(n).fill(null);
+      c.forecast.positions.forEach((p, i) => { a[p] = c.forecast[key][i]; });
+      return full(a);
+    };
+    if (c.forecast.upper && c.forecast.lower) {
+      ds.push({ label: "fc upper", data: arr("upper"), histId: "fc", isBand: true, borderWidth: 0,
+        pointRadius: 0, fill: false, order: 5 });
+      ds.push({ label: "fc lower", data: arr("lower"), histId: "fc", isBand: true, borderWidth: 0,
+        pointRadius: 0, fill: "-1", backgroundColor: "rgba(255,204,51,0.15)", order: 5 });
+    }
+    ds.push({ label: "Next days (powWX blend)", data: arr("values"), histId: "fc",
+      borderColor: MODEL_COLORS.powwx_blend, borderWidth: 2.5, borderDash: [2, 3],
+      pointRadius: 0, tension: 0.2, order: -2 });
+  }
+  if (c.current) {
+    const modelled = c.current.source === "modelled";
+    ds.push({ label: `${c.complete ? "Latest" : "This"} season (${c.season})${modelled ? ", modelled" : ""}`, data: full(c.current.values),
+      histId: "cur", borderColor: OBS_COLOR, borderWidth: 2.5, borderDash: modelled ? [6, 4] : undefined,
+      pointRadius: 0, tension: 0.2, spanGaps: false, order: -1 });
+  }
+
+  // Ticks on the first of each month.
+  const monthStarts = [];
+  for (let i = 0; i < n; i++) if (axisDay(c.axis_start, i, { day: "numeric", month: undefined }) === "1") monthStarts.push(i);
+
+  const chart = new Chart(canvas, {
+    type: "line",
+    data: { datasets: ds },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          titleFont: { size: 11 }, bodyFont: { size: 11 }, footerFont: { size: 10, weight: "normal" },
+          filter: (i) => !i.dataset.isBand && i.dataset.histId !== "past" && i.parsed.y !== null,
+          callbacks: {
+            title: (items) => axisDay(c.axis_start, items[0].parsed.x),
+            label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(nd)} ${unit}`,
+            footer: (items) => {
+              if (!c.band || !items.length) return "";
+              const x = items[0].parsed.x, lo = c.band.p10[x], hi = c.band.p90[x];
+              if (lo == null || hi == null) return "";
+              const ns = c.band.n_seasons ? ` · ${c.band.n_seasons[x]} seasons` : "";
+              return `Normal range (10–90 %): ${lo.toFixed(nd)} to ${hi.toFixed(nd)} ${unit}${ns}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: { type: "linear", min: 0, max: n - 1,
+             afterBuildTicks: (axis) => { axis.ticks = monthStarts.map((v) => ({ value: v })); },
+             ticks: { color: "#9fb0c3", maxRotation: 0, autoSkip: false,
+                      callback: (v) => axisDay(c.axis_start, v, { day: undefined }) },
+             grid: { color: "#243246" } },
+        // Snow: at least 0-50 cm, so a few cm don't fill the chart.
+        y: { title: { display: true, text: unit, color: "#9fb0c3" },
+             ...(unit === "cm" ? { min: 0, suggestedMax: 50 } : {}),
+             ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },
+      },
+    },
+    plugins: [todayLinePlugin(todayPos)],
+  });
+  histCharts.push(chart);
+  return chart;
+}
+
+// Clickable legend for one season chart (toggles datasets by histId).
+function seasonLegend(chart, c) {
+  const items = [];
+  if (c.current) items.push(["cur", OBS_COLOR, `${c.complete ? "Latest" : "This"} season (${c.season})${c.current.source === "modelled" ? " <em class=\"tag\">modelled</em>" : ""}`]);
+  if (c.forecast) items.push(["fc", MODEL_COLORS.powwx_blend, "Next days (powWX blend)"]);
+  const past = c.past || [];
+  if (past.length) {
+    const prev = [...past].sort((a, b) => a.year - b.year)[past.length - 1];
+    items.push(["prev", HIST_COLORS.prev, `Last season (${prev.label})`]);
+    if (past.length > 1) items.push(["past", "#7d8ea0", `Older seasons (${past.length - 1})`]);
+  }
+  if (c.average) items.push(["avg", HIST_COLORS.avg, "Station average"]);
+  if (c.band) items.push(["band", "rgba(94,200,255,0.6)", "Normal range"]);
+  const legend = document.createElement("div");
+  legend.className = "legend";
+  legend.innerHTML = items.map(([id, color, text]) =>
+    `<span class="leg" data-hist="${id}"><i style="background:${color}"></i>${text}</span>`).join("");
+  legend.querySelectorAll(".leg").forEach((span) => {
+    span.onclick = () => {
+      const visible = !span.classList.toggle("off");
+      chart.data.datasets.forEach((d, i) => { if (d.histId === span.dataset.hist) chart.setDatasetVisibility(i, visible); });
+      chart.update();
+    };
+  });
+  return legend;
+}
+
+function todayPosition(h, c) {
+  const p = daysBetween(c.season_start, h.today);
+  return p >= 0 && p < c.n_days ? p : null;
+}
+
+function temperatureSummary(h, loc, c) {
+  const s = c.summary, years = h.reference.years.join("–");
+  const parts = [];
+  if (s && s.percentile != null) {
+    const cls = pctClass(s.percentile);
+    parts.push(`<p>${c.complete ? "Over the whole season" : "So far this season"} (${s.n_days} days): mean <strong>${s.mean.toFixed(1)} °C</strong>, ` +
+      `<strong>${signed(s.anomaly)} °C</strong> vs the ${years} normal: ${cls.label} ` +
+      `(${ordinal(s.percentile)} percentile of ${s.n_ref} normal seasons on the same days).</p>`);
+  } else if (s) {
+    parts.push(`<p>${c.complete ? "Over the whole season" : "So far this season"} (${s.n_days} days): mean ${s.mean.toFixed(1)} °C.</p>`);
+  } else {
+    parts.push(`<p class="note">Not enough of this season yet for a summary (needs 7 days).</p>`);
+  }
+  if (s && s.rank != null) {
+    const step = loc.adjustment && loc.adjustment.step;
+    const caveat = step && step.lo < 0 === step.hi < 0
+      ? ` Since ${fmtDay(step.cut, { month: "short", year: "numeric" })} this station reads about ` +
+        `${Math.abs(step.step).toFixed(1)} °C (${Math.abs(step.hi).toFixed(1)}–${Math.abs(step.lo).toFixed(1)}) ` +
+        `${step.step < 0 ? "cooler" : "warmer"} relative to the model than before, perhaps an equipment change, ` +
+        "so ranks against older seasons are uncertain by about that much."
+      : "";
+    parts.push(`<p class="note">Station's own record: ${ordinal(s.rank)} warmest of ${s.n_seasons} seasons ` +
+      `since ${s.station_since} on the same days.${caveat}</p>`);
+  }
+  const a = loc.adjustment;
+  if (c.band) {
+    const cov = a && a.coverage_daily;
+    parts.push(`<p class="note">Band: ${years} normal, <em>modelled</em> (ERA5-Land, adjusted to this station; ` +
+      `${c.band.n_years} seasons)${c.band.provisional ? ' <em class="tag">provisional</em>' : ""}.` +
+      (cov ? ` Check on recent station days: ${Math.round(cov.below * 100)} % fell below and ` +
+        `${Math.round(cov.above * 100)} % above its 10–90 % range (a fair band: 10 % each).` : "") +
+      (c.band.provisional ? " Only a short station record to adjust with, so it may be off by about 1 °C." : "") + "</p>");
+  }
+  if (c.current && c.current.source === "modelled") {
+    parts.push(`<p class="note">This station's own values are switched off here; its line is ERA5-Land, adjusted.</p>`);
+  }
+  return parts.join("");
+}
+
+function snowSummary(loc, c) {
+  const s = c.summary, parts = [];
+  if (s && s.depth_cm != null) {
+    let txt = `Latest (${axisDay(c.axis_start, s.position)}): <strong>${s.depth_cm} cm</strong>`;
+    if (s.rank != null) txt += `, ${ordinal(s.rank)} deepest of ${s.n_seasons} seasons for the date`;
+    if (s.pct_of_median != null) txt += ` (${s.pct_of_median} % of the median)`;
+    parts.push(`<p>${txt}.</p>`);
+  } else if (s && s.rank != null) {
+    parts.push(`<p>Latest: ${ordinal(s.rank)} deepest of ${s.n_seasons} seasons for the date.</p>`);
+  } else if (!c.current) {
+    parts.push(`<p class="note">No snow-depth readings yet this season.</p>`);
+  }
+  if (c.band) {
+    parts.push(`<p class="note">Band: this station's measured seasons since ${c.band.since}, drawn where at ` +
+      "least 8 seasons have data near the date (the tooltip gives the count).</p>");
+  }
+  if (c.note) parts.push(`<p class="note">${c.note}</p>`);
+  return parts.join("");
+}
+
+function milestonesTable(m) {
+  const fmt = (key, v) => (v == null ? "—" : key === "peak_cm" ? `${v} cm` : axisDay(m.axis_start, v));
+  const rows = [["First 10 cm", "onset"], ["Peak depth", "peak_cm"], ["Peak date", "peak"],
+    ["Melt-out (below 10 cm)", "meltout"]];
+  const wrap = document.createElement("div");
+  wrap.className = "table-scroll";
+  const cur = m.current || {};
+  wrap.innerHTML = `<table class="fc milestones"><thead><tr><th></th><th>This season</th><th>Median</th>` +
+    `<th>Range</th><th>n</th></tr></thead><tbody>` +
+    rows.map(([label, key]) => {
+      const st = m.stats[key];
+      const now = key === "onset" ? (cur.onset != null ? fmt(key, cur.onset) : "not yet") : "—";
+      return `<tr><td>${label}</td><td>${now}</td><td>${st ? fmt(key, st.median) : "—"}</td>` +
+        `<td>${st ? `${fmt(key, st.min)} – ${fmt(key, st.max)}` : "—"}</td><td>${st ? st.n : "—"}</td></tr>`;
+    }).join("") + `</tbody></table>`;
+  const cap = document.createElement("div");
+  cap.className = "note";
+  cap.textContent = "Seasons count only where the record can pin a date down (no gap over 14 days " +
+    "before it; for the peak, December–April mostly covered), so n differs by row.";
+  wrap.appendChild(cap);
+  return wrap;
+}
+
+function unusualBlock(h, ids) {
+  const box = document.createElement("div");
+  box.className = "unusual";
+  box.innerHTML = `<h3>How unusual are recent and coming days? <span class="unit note">daily mean temperature</span></h3>`;
+  for (const lid of ids) {
+    const u = h.locations[lid].unusual;
+    if (!u) continue;
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<div class="row-label">${h.locations[lid].label} <span class="note">${h.locations[lid].elevation_m} m</span></div>`;
+    const chips = document.createElement("div");
+    chips.className = "chips";
+    let sepDone = false;
+    for (const d of u.days) {
+      if (d.kind === "forecast" && !sepDone) {
+        const sep = document.createElement("span");
+        sep.className = "chip-sep"; sep.textContent = "forecast ▸";
+        chips.appendChild(sep); sepDone = true;
+      }
+      if (d.pct == null) continue;
+      const cls = pctClass(d.pct);
+      const fc = d.kind === "forecast";
+      const range = fc && d.pct_lo != null ? `${Math.min(d.pct_lo, d.pct_hi)}–${ordinal(Math.max(d.pct_lo, d.pct_hi))}` : ordinal(d.pct);
+      const chip = document.createElement("div");
+      chip.className = `chip ${cls.cls}${fc ? " fc" : ""}`;
+      chip.title = `${fmtDay(d.date, { weekday: "long", month: "short", day: "numeric" })}: ` +
+        (d.value != null ? `${d.value.toFixed(1)} °C, ` : "") +
+        `${cls.label} (${ordinal(d.pct)} percentile${fc && d.pct_lo != null ? `; 80 % range ${range} percentile` : ""}) ` +
+        `${fc ? "forecast by the powWX blend" : "observed"}`;
+      chip.innerHTML = `<span>${fmtDay(d.date, { weekday: "short", day: "numeric" })}</span>` +
+        (d.value != null ? `<span class="chip-val">${Math.round(d.value) || 0}°</span>` : "") +
+        `<span>${range}</span>`;
+      chips.appendChild(chip);
+    }
+    row.appendChild(chips);
+    box.appendChild(row);
+  }
+  const key = document.createElement("div");
+  key.className = "chip-key";
+  key.innerHTML = PCT_CLASSES.map(([, label, cls]) => `<span><i class="${cls}"></i>${label}</span>`).join("") +
+    `<span>dashed = forecast</span>`;
+  box.appendChild(key);
+  const cap = document.createElement("p");
+  cap.className = "note";
+  cap.textContent = `Percentile of each day's mean temperature among the same dates (±${h.reference.window_days} ` +
+    `days) in ${h.reference.years.join("–")}, from the modelled normal adjusted to each station. Forecast days use ` +
+    "the powWX blend, with its 80 % range as a percentile range. Recent years run warmer than that normal, so " +
+    "'warmer' turns up more than one day in three.";
+  box.appendChild(cap);
+  return box;
+}
+
+function chartPanel(title, unitLabel) {
+  const panel = document.createElement("div");
+  panel.className = "panel";
+  panel.innerHTML = `<h3>${title} <span class="unit">${unitLabel}</span></h3>`;
+  const cw = document.createElement("div");
+  cw.className = "chart-wrap";
+  const canvas = document.createElement("canvas");
+  cw.appendChild(canvas);
+  panel.appendChild(cw);
+  return { panel, canvas, cw };
+}
+
+function renderHistoryTab(h, ids, tab, root) {
+  histCharts.splice(0).forEach((ch) => ch.destroy());
+  root.innerHTML = "";
+  for (const lid of ids) {
+    const loc = h.locations[lid];
+    const key = tab === "snow" ? "snow_depth" : `temperature_${tab}`;
+    const c = loc.charts[key];
+    if (!c) continue;
+    const head = document.createElement("div");
+    head.className = "loc-head";
+    head.innerHTML = `<h2>${loc.label}</h2><span class="elev">${loc.elevation_m} m</span><span class="role">${loc.role}</span>`;
+    root.appendChild(head);
+    const grid = document.createElement("div");
+    grid.className = "hist-grid";
+    const title = tab === "snow" ? `Snow depth, ${c.season}` : `${h.seasons[tab].label} ${c.season}`;
+    const { panel, canvas, cw } = chartPanel(title, tab === "snow" ? "cm, daily median" : `°C, ${c.statistic}`);
+    grid.appendChild(panel);
+    const chart = makeSeasonChart(canvas, c, c.unit, todayPosition(h, c));
+    panel.insertBefore(seasonLegend(chart, c), cw);
+    const sum = document.createElement("div");
+    sum.className = "hist-summary";
+    sum.innerHTML = tab === "snow" ? snowSummary(loc, c) : temperatureSummary(h, loc, c);
+    panel.appendChild(sum);
+    if (tab === "snow" && loc.milestones && Object.keys(loc.milestones.stats).length) {
+      const mp = document.createElement("div");
+      mp.className = "panel";
+      mp.innerHTML = "<h3>Snow milestones at this station</h3>";
+      mp.appendChild(milestonesTable(loc.milestones));
+      grid.appendChild(mp);
+    }
+    root.appendChild(grid);
+  }
+  const ms = h.modelled_snowpack;
+  if (tab === "snow" && ms) {
+    const head = document.createElement("div");
+    head.className = "loc-head";
+    head.innerHTML = `<h2>Modelled snowpack</h2><span class="role">ERA5-Land, both stations</span>`;
+    root.appendChild(head);
+    // Lines are this snow season (if it has data from 1 Dec yet) and last season.
+    const lines = Object.entries(ms.lines).map(([y, l]) => ({ year: Number(y), ...l }));
+    const cur = lines.find((l) => l.label === ms.season);
+    const c = { n_days: ms.n_days, axis_start: ms.axis_start, season: ms.season,
+      band: { ...ms.band, n_years: ms.n_years },
+      current: cur ? { values: cur.values, source: "modelled-ratio" } : null,
+      past: lines.filter((l) => l !== cur) };
+    const grid = document.createElement("div");
+    grid.className = "hist-grid";
+    const { panel, canvas, cw } = chartPanel(`Snowpack vs normal, ${c.season}`, "% of the 1991–2020 median for the date");
+    grid.appendChild(panel);
+    const chart = makeSeasonChart(canvas, c, "%", null);
+    panel.insertBefore(seasonLegend(chart, c), cw);
+    const sum = document.createElement("div");
+    sum.className = "hist-summary";
+    sum.innerHTML = (ms.summary
+      ? `<p>As of ${fmtDay(ms.summary.date, { month: "short", day: "numeric" })}: <strong>${ms.summary.pct_of_median} %</strong> of the normal median ` +
+        `(${ordinal(ms.summary.percentile)} percentile).</p>`
+      : `<p class="note">Shown from 1 December, when the snowpack is deep enough for a percentage to mean something.</p>`) +
+      `<p class="note"><em class="tag">modelled</em> ERA5-Land, one ~10 km cell for both stations, data to ` +
+      `${fmtDay(ms.data_to, { month: "short", day: "numeric" })} (about 5 days behind). It runs about 2.4× deeper ` +
+      "than #58 measures, so only the comparison with its own normal is shown, never depths. It ranks seasons " +
+      "reasonably well (correlation 0.8 with #58 on 1 April, 16 seasons). Late in spring, % of median exaggerates: " +
+      "the median melts out first.</p>";
+    panel.appendChild(sum);
+    root.appendChild(grid);
+  }
+}
+
+function buildHistory(h) {
+  const intro = document.getElementById("history-intro");
+  const body = document.getElementById("history-body");
+  const ids = Object.keys(h.locations || {}).sort(
+    (a, b) => h.locations[b].elevation_m - h.locations[a].elevation_m);
+  if (!ids.length) { body.textContent = "Season history is unavailable in this build of the page."; return; }
+  intro.textContent = h.notes || "";
+  body.innerHTML = "";
+  body.appendChild(unusualBlock(h, ids));
+
+  const month = Number(h.today.slice(5, 7));
+  const sample = h.locations[ids[0]].charts;
+  const tabs = [["winter", `Winter ${sample.temperature_winter.season}`],
+    ["summer", `Summer ${sample.temperature_summer.season}`], ["snow", `Snow depth ${sample.snow_depth.season}`]];
+  let current = month >= 11 || month <= 4 ? "winter" : "summer";
+  const bar = document.createElement("div");
+  bar.className = "hist-tabs";
+  const root = document.createElement("div");
+  for (const [id, label] of tabs) {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = label; b.dataset.tab = id;
+    if (id === current) b.classList.add("active");
+    b.onclick = () => {
+      current = id;
+      bar.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x.dataset.tab === id));
+      renderHistoryTab(h, ids, id, root);
+    };
+    bar.appendChild(b);
+  }
+  body.append(bar, root);
+  renderHistoryTab(h, ids, current, root);
+
+  const a = (url, text) => `<a href="${url}" target="_blank" rel="noopener">${text}</a>`;
+  const credits = document.createElement("ul");
+  credits.className = "credits note";
+  credits.innerHTML = (h.credits || []).map((c) => `<li>${a(c.url, c.text)}</li>`).join("");
+  body.appendChild(credits);
+}
+
+// Fetch history.json only when the section comes near the screen, so it never
+// slows the first paint of the forecasts.
+function lazyHistory() {
+  const section = document.getElementById("history");
+  const load = async () => {
+    try {
+      buildHistory(await loadJSON("history"));
+    } catch (e) {
+      console.warn("history skipped:", e.message);
+      document.getElementById("history-body").textContent = "Season history is unavailable in this build of the page.";
+    }
+  };
+  if (!("IntersectionObserver" in window)) { load(); return; }
+  const io = new IntersectionObserver((entries) => {
+    if (entries.some((e) => e.isIntersecting)) { io.disconnect(); load(); }
+  }, { rootMargin: "600px" });
+  io.observe(section);
+}
+
 // ---- webcams -------------------------------------------------------------
 
 function buildWebcams(webcams) {
@@ -1007,6 +1464,7 @@ async function main() {
     try { blend = await loadJSON("blend"); } catch (e) { console.warn("blend skipped:", e.message); }
     try { flEst = await loadJSON("freezing_level"); } catch (e) { console.warn("freezing_level skipped:", e.message); }
     buildForecast(fc, obs, blend, flEst);
+    lazyHistory();
     // Verification is optional: tolerate its absence so the rest of the viewer
     // still renders if verification.json hasn't been generated yet.
     try {

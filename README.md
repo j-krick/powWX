@@ -125,6 +125,32 @@ GEPS (Canadian ensemble) is logged to `data/ensembles/` but not yet verified.
 Verifying it and fanning out to wind / precip / snow depth are the remaining
 Phase 2 work.
 
+## Season in context (historical comparison)
+
+A page section answering "is this season unusual?" for temperature (winter
+1 Nov–30 Apr, summer 1 May–31 Oct) and snow depth (1 Oct–30 Jun axis) at both
+stations: this season against past seasons and a 1991–2020 normal band, how
+unusual the last 7 and next 7 days are (percentiles), and snow milestones at #58.
+
+- **Normals come from ERA5-Land reanalysis** (modelled, via Open-Meteo's archive
+  API), adjusted to each station by its monthly mean difference, because the
+  station records are far shorter than 30 years. Checked 2026-10-16: daily
+  anomalies correlate 0.94 with #58; ERA5-Land snow depth runs ~2.4× deep, so it
+  is only shown as % of its own median. Never use `best_match` for history (it
+  switches to ECMWF IFS from 2017).
+- **#58 reads ~0.3 °C cooler relative to ERA5-Land since its 2021 outage**
+  (maybe an equipment change); the adjustment uses data from 2021-10-15 and the
+  page states the step as a caveat on ranks.
+- Code: `powwx/history.py` (pure statistics, no powWX imports, so it can be
+  copied into powOmeter), `powwx/reanalysis.py`, `scripts/fetch_reanalysis.py`,
+  `scripts/build_history.py` → `viewer/data/history.json` (built in `viewer.yml`,
+  ~90 KB, loaded only when the section scrolls into view). Settings, including
+  the **station #58 kill switch**, are in `config/history.yaml`.
+- Cache: `data/reanalysis/<model>/<location>/*.parquet` (append-only, latest
+  fetch wins, ~1 MB). The full backfill runs **locally**:
+  `python scripts/fetch_reanalysis.py --start 1940-01-01`; `reanalysis.yml`
+  tops up the last 90 days weekly.
+
 ## Models logged
 
 `gem_hrdps_continental`, `gem_regional`, `gem_global`, `ecmwf_ifs025`,
@@ -172,6 +198,8 @@ python scripts/run_webcam_grabber.py       # needs R2_* env vars
 python scripts/import_pcds.py ~/Downloads/pcds_data   # backfill #58 obs from PCDS
 python scripts/build_verification.py       # metrics -> viewer/data/verification.json
 python scripts/build_viewer_data.py        # viewer JSON -> viewer/data/
+python scripts/build_history.py            # season history -> viewer/data/history.json
+python scripts/fetch_reanalysis.py --recent 90   # top up the ERA5 cache
 ```
 
 ## GitHub Actions secrets (webcam grabber)
@@ -190,6 +218,11 @@ Set these repo secrets for Cloudflare R2 (free tier: 10 GB + zero egress):
 Weather data by [Open-Meteo](https://open-meteo.com/) under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — attribution required;
 keep this notice on any public viewer. Code is MIT licensed.
+
+Climate normals: ERA5-Land and ERA5 reanalysis (Copernicus Climate Change
+Service), via Open-Meteo. Contains modified Copernicus Climate Change Service
+information; neither the European Commission nor ECMWF is responsible for any
+use that may be made of the information it contains.
 
 POW-O-METER data: Mount Remo Backcountry Society, CC BY 4.0.
 

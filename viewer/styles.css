@@ -105,6 +105,41 @@ table.verif td:first-child, table.verif th:first-child { text-align: left; }
 .strata-chart { height: 240px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: .6rem; }
 table.strat td.win { color: var(--ink); font-weight: 700; background: rgba(94, 200, 255, .12); }
 
+/* Season in context (history) */
+#history > h2 { border-bottom: 1px solid var(--line); padding-bottom: .35rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; }
+#history .badge { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #062033; background: var(--accent); padding: .12rem .5rem; border-radius: 999px; }
+#history-intro { max-width: 75ch; margin-top: .5rem; }
+.hist-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+.hist-grid .chart-wrap { height: 260px; }
+.hist-grid .legend { margin: 0 0 .5rem; }
+.hist-summary { margin: .55rem 0 0; font-size: .88rem; }
+.hist-summary p { margin: .2rem 0; }
+.hist-tabs { display: flex; flex-wrap: wrap; gap: .35rem; margin: .4rem 0 1rem; }
+.hist-tabs button { background: var(--panel-2); color: var(--ink-dim); border: 1px solid var(--line); border-radius: 6px; padding: .35rem .8rem; cursor: pointer; font-size: .85rem; }
+.hist-tabs button:hover { border-color: var(--accent); }
+.hist-tabs button.active { background: var(--accent); color: #062033; font-weight: 600; border-color: var(--accent); }
+.unusual { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: .7rem .9rem; margin-bottom: 1.25rem; }
+.unusual h3 { margin: 0 0 .5rem; font-size: 1rem; }
+.unusual .row { margin: .45rem 0; }
+.unusual .row-label { font-size: .85rem; margin-bottom: .25rem; }
+.chips { display: flex; flex-wrap: wrap; gap: .3rem; align-items: stretch; }
+.chip { min-width: 3.7rem; padding: .25rem .35rem; border-radius: 6px; color: #fff; text-align: center; font-size: .75rem; line-height: 1.25; border: 1px solid transparent; }
+.chip span { display: block; }
+.chip .chip-val { font-size: .9rem; font-weight: 700; }
+.chip.fc { border: 1px dashed rgba(255, 255, 255, .7); }
+.chip-sep { align-self: center; color: var(--ink-dim); font-size: .72rem; padding: 0 .2rem; }
+.pc-vcold { background: #1f4e8c; }
+.pc-cool { background: #3d7cc0; }
+.pc-norm { background: #3a4757; }
+.pc-warm { background: #b8693a; }
+.pc-vwarm { background: #a8322d; }
+.chip-key { display: flex; flex-wrap: wrap; gap: .3rem .8rem; margin-top: .45rem; font-size: .75rem; color: var(--ink-dim); }
+.chip-key i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: .3rem; vertical-align: -1px; }
+table.milestones td, table.milestones th { text-align: right; }
+table.milestones td:first-child, table.milestones th:first-child { text-align: left; }
+#history .credits { margin: .4rem 0; padding-left: 1.1rem; }
+#history .credits a { color: var(--accent); }
+
 /* Webcams */
 #webcams h2 { border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
 #webcam-cams { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 1rem; }

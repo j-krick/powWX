@@ -59,11 +59,19 @@ def fetch_forecast(
         params["forecast_days"] = forecast_days
     if extra_params:
         params.update(extra_params)
+    return get_with_retry(forecast_url, params, timeout=timeout, max_retries=max_retries)
 
+
+def get_with_retry(
+    url: str, params: dict, *, timeout: int = REQUEST_TIMEOUT, max_retries: int = MAX_RETRIES
+) -> dict:
+    """GET an Open-Meteo endpoint and return its parsed JSON, retrying timeouts,
+    connection errors and transient statuses (429/5xx) with backoff; raises the
+    last error if every attempt fails."""
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
-            resp = requests.get(forecast_url, params=params, timeout=timeout)
+            resp = requests.get(url, params=params, timeout=timeout)
             if resp.status_code in RETRY_STATUS:
                 raise requests.HTTPError(f"transient HTTP {resp.status_code}", response=resp)
             resp.raise_for_status()
