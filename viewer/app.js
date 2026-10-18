@@ -20,8 +20,8 @@ const CHART_VARS = [
   { key: "freezing_level_height", title: "Freezing level", agg: "minmax", refElevation: true },
   { key: "wind_speed_10m", title: "Wind speed", agg: "max" },
   { key: "wind_direction_10m", title: "Wind direction", agg: "dir", scatter: true, degrees: true },
-  { key: "precipitation", title: "Precipitation", agg: "sum" },
-  { key: "snowfall", title: "Snowfall", agg: "sum" },
+  { key: "precipitation", title: "Precipitation", agg: "sum", perHour: true },
+  { key: "snowfall", title: "Snowfall", agg: "sum", perHour: true },
   { key: "snow_depth", title: "Snow depth", agg: "max" },
   { key: "relative_humidity_2m", title: "Humidity", agg: "mean" },
 ];
@@ -292,8 +292,11 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
     });
   }
 
+  // Precipitation and snowfall are hourly amounts (3- and 6-hourly models are
+  // spread evenly over their hours by Open-Meteo); the daily table sums them.
+  const unit = fc.units[vcfg.key] || "";
   const yScale = {
-    title: { display: true, text: fc.units[vcfg.key] || "", color: "#9fb0c3" },
+    title: { display: true, text: vcfg.perHour ? `${unit} per hour` : unit, color: "#9fb0c3" },
     ticks: { color: "#9fb0c3" }, grid: { color: "#243246" },
   };
   if (vcfg.degrees) {
@@ -926,7 +929,8 @@ function makeSeasonChart(canvas, c, unit, todayPos) {
     const isPrev = p === prev;
     ds.push({ label: isPrev ? `Last season (${p.label})` : p.label, data: full(p.values),
       histId: isPrev ? "prev" : "past", borderColor: isPrev ? HIST_COLORS.prev : HIST_COLORS.past,
-      borderWidth: isPrev ? 1.5 : 1, pointRadius: 0, tension: 0.2, spanGaps: false, order: isPrev ? 2 : 4 });
+      borderWidth: isPrev ? 1.5 : 1, borderDash: p.old_site ? [5, 3] : undefined,   // old station site
+      pointRadius: 0, tension: 0.2, spanGaps: false, order: isPrev ? 2 : 4 });
   }
   if (c.average) {
     ds.push({ label: `Station average (${c.average.n_seasons} seasons)`, data: full(c.average.values),

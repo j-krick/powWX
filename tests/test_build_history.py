@@ -163,3 +163,18 @@ def test_kill_switch_also_drops_station_ranks_from_el_nino(wired):
     wired(show=False)
     e = bh.build(today=TODAY, blend=_blend())["enso"]
     assert all("station_rank" not in r for r in e["years"])
+
+
+def test_old_site_snow_seasons_are_shown_but_not_ranked(wired, monkeypatch):
+    wired(show=True)
+    old = pd.date_range("2025-01-26", "2026-06-30", freq="h", tz="UTC")
+    recs = [{"location": "pow_o_meter", "time": t.strftime("%Y-%m-%dT%H:%M:%SZ"),
+             "variable": "snow_depth", "value": 2.0, "site_id": "shames_top_a"} for t in old]
+    monkeypatch.setattr(bh.obs, "fetch_powometer_v1", lambda: recs + _top_snow())
+    snow = bh.build(today=TODAY, blend=_blend())["locations"]["pow_o_meter"]["charts"]["snow_depth"]
+    assert [p["label"] for p in snow["past"]] == [
+        f"{bh.hist.season_label(y, 'snow')}, old site" for y in (2025, 2026)]
+    assert all(p["old_site"] for p in snow["past"])
+    assert snow["band"] is None and "rank" not in snow["summary"]
+    assert max(v for v in snow["current"]["values"] if v is not None) < 10   # new site only
+    assert "old site" in snow["note"]

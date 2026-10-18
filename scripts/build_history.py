@@ -99,15 +99,20 @@ def _hourly_from_log(lid: str, variable: str) -> pd.Series:
     return pd.Series(df["observed"].to_numpy(dtype=float), index=pd.DatetimeIndex(df["time"]))
 
 
-def top_snow_hourly() -> pd.Series:
-    """POW-O-METER snow depth (m) from powOmeter v1, current site only."""
+def top_snow_hourly() -> tuple[pd.Series, pd.Series]:
+    """POW-O-METER snow depth (m) from powOmeter v1: (current site, earlier sites).
+    The earlier site is ~70 m away and was wind-affected, so its seasons are
+    shown for reference only, never pooled with the current site's."""
     recs = [r for r in obs.fetch_powometer_v1() if r["variable"] == "snow_depth"]
     if not recs:
-        return pd.Series(dtype=float)
+        return pd.Series(dtype=float), pd.Series(dtype=float)
     site = max(recs, key=lambda r: r["time"])["site_id"]
-    recs = [r for r in recs if r["site_id"] == site]
-    return pd.Series([r["value"] for r in recs],
-                     index=pd.to_datetime([r["time"] for r in recs], utc=True))
+
+    def series(rs):
+        return pd.Series([r["value"] for r in rs],
+                         index=pd.to_datetime([r["time"] for r in rs], utc=True), dtype=float)
+    return (series([r for r in recs if r["site_id"] == site]),
+            series([r for r in recs if r["site_id"] != site]))
 
 
 def blend_daily(blend: dict | None, lid: str) -> pd.DataFrame | None:
@@ -262,9 +267,12 @@ def unusual_days(*, today, daily, adj, fc_daily, settings, show_values: bool) ->
 # Snow depth
 # --------------------------------------------------------------------------- #
 
-def snow_chart(*, today, daily_cm, show_values: bool, history_note: str | None) -> dict:
+def snow_chart(*, today, daily_cm, show_values: bool, history_note: str | None,
+               old_site_cm: pd.Series | None = None) -> dict:
     """Measured snow depth on the 1 Oct-30 Jun axis: this season, past seasons
-    and a band from them (only where enough seasons have data)."""
+    and a band from them (only where enough seasons have data). Seasons from
+    ``old_site_cm`` (a previous site) are added to ``past`` marked
+    ``old_site``, and left out of the band and the rank."""
     kind = "snow"
     axis = hist.axis_dates(kind)
     end_year = hist.latest_season(today, kind)
@@ -288,6 +296,11 @@ def snow_chart(*, today, daily_cm, show_values: bool, history_note: str | None) 
             out["current"] = {"values": _arr(cur, 0), "source": "measured"}
         out["past"] = [{"year": int(y), "label": hist.season_label(int(y), kind),
                         "values": _arr(row, 0)} for y, row in past.iterrows()]
+        if old_site_cm is not None and not old_site_cm.empty:
+            old = hist.season_matrix(old_site_cm, kind).drop(index=end_year, errors="ignore")
+            old = old[old.notna().mean(axis=1) >= PAST_MIN_COVERAGE]
+            out["past"] += [{"year": int(y), "label": f"{hist.season_label(int(y), kind)}, old site",
+                             "values": _arr(row, 0), "old_site": True} for y, row in old.iterrows()]
 
     if cur is not None and cur.notna().any():
         p = int(cur.last_valid_index())
@@ -531,8 +544,14 @@ def build_location(loc: dict, *, today, settings, blend) -> tuple[dict, dict]:
 
     temp = hist.qc_hourly(_hourly_from_log(lid, "temperature_2m"), "temperature_2m")
     daily = hist.daily_values(temp, "mean", 20)
-    snow_hourly = top_snow_hourly() if lid == "pow_o_meter" else _hourly_from_log(lid, "snow_depth")
+    old_hourly = None
+    if lid == "pow_o_meter":
+        snow_hourly, old_hourly = top_snow_hourly()
+    else:
+        snow_hourly = _hourly_from_log(lid, "snow_depth")
     snow_cm = hist.daily_values(hist.qc_hourly(snow_hourly, "snow_depth"), "median", 6) * 100
+    old_cm = (hist.daily_values(hist.qc_hourly(old_hourly, "snow_depth"), "median", 6) * 100
+              if old_hourly is not None and not old_hourly.empty else None)
 
     model = ra.load_reanalysis(cfg.DATA_DIR, location=lid, model=settings["reference_model"])
     tmean = model.get("temperature_2m_mean") if not model.empty else None
@@ -560,11 +579,16 @@ def build_location(loc: dict, *, today, settings, blend) -> tuple[dict, dict]:
         charts[f"temperature_{kind}"] = temperature_chart(
             kind, today=today, daily=daily, adj=adj, settings=settings, fc_daily=fc_daily,
             show_values=show, provisional=provisional)
-    note = ("Snow-depth history starts this season: the station moved about 70 m on "
-            "2026-09-26 and depths aren't comparable across the move."
-            if lid == "pow_o_meter" else None)
+    note = None
+    if lid == "pow_o_meter":
+        note = ("The station moved about 70 m on 2026-09-26, at the same elevation, away from a "
+                "wind-affected spot. Dashed lines are seasons measured at the old site, shown for "
+                "reference only: depths there aren't directly comparable with the new site, so "
+                "they're left out of ranks." if old_cm is not None and not old_cm.empty
+                else "Snow-depth history starts this season: the station moved about 70 m on "
+                     "2026-09-26 and depths aren't comparable across the move.")
     charts["snow_depth"] = snow_chart(today=today, daily_cm=snow_cm, show_values=show,
-                                      history_note=note)
+                                      history_note=note, old_site_cm=old_cm)
 
     out = {
         "label": loc["name"], "elevation_m": loc["elevation_m"], "role": loc["role"],
