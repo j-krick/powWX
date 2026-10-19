@@ -340,7 +340,9 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
         x: { type: "time",
              min: VIEW.min == null ? undefined : VIEW.min,
              max: VIEW.max == null ? undefined : VIEW.max,
-             time: { tooltipFormat: "EEE MMM d, HH:mm" },
+             // Weekday on day and hour ticks ("Tue Oct 20", "Tue 15:00").
+             time: { tooltipFormat: "EEE MMM d, HH:mm",
+                     displayFormats: { day: "EEE MMM d", hour: "EEE HH:mm" } },
              ticks: { color: "#9fb0c3", maxRotation: 0, autoSkipPadding: 20 }, grid: { color: "#243246" } },
         y: yScale,
       },

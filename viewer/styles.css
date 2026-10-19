@@ -46,7 +46,7 @@ main { padding: 1.25rem; max-width: 1280px; margin: 0 auto; }
 .range-presets { display: flex; gap: .35rem; flex-wrap: wrap; }
 .range-controls button { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: .3rem .6rem; cursor: pointer; font-size: .8rem; }
 .range-controls button:hover { border-color: var(--accent); }
-.range-custom { display: flex; align-items: center; gap: .35rem; color: var(--ink-dim); }
+.range-custom { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; color: var(--ink-dim); }
 .range-custom input[type=date] { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: .25rem .4rem; font-size: .8rem; color-scheme: dark; }
 .range-label { color: var(--accent); font-variant-numeric: tabular-nums; }
 .range-hint { color: var(--ink-dim); margin-left: auto; font-size: .78rem; }
@@ -57,7 +57,7 @@ main { padding: 1.25rem; max-width: 1280px; margin: 0 auto; }
 .loc-head .elev { color: var(--accent); font-size: .9rem; }
 .loc-head .role { color: var(--ink-dim); font-size: .8rem; text-transform: uppercase; letter-spacing: 1px; }
 
-.panel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 1rem; }
+.panel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 1rem; }
 
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: .8rem .9rem 1rem; }
 .panel h3 { margin: 0 0 .5rem; font-size: 1rem; font-weight: 600; }
@@ -101,7 +101,7 @@ table.verif td:first-child, table.verif th:first-child { text-align: left; }
 .strata-tabs button:hover { border-color: var(--accent); }
 .strata-tabs button.active { background: var(--accent); color: #062033; font-weight: 600; border-color: var(--accent); }
 .strata-callout { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: .5rem .8rem; margin-bottom: .8rem; font-size: .88rem; }
-.strata-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1rem; align-items: start; }
+.strata-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 1rem; align-items: start; }
 .strata-chart { height: 240px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: .6rem; }
 table.strat td.win { color: var(--ink); font-weight: 700; background: rgba(94, 200, 255, .12); }
 
@@ -146,7 +146,7 @@ table.milestones td:first-child, table.milestones th:first-child { text-align: l
 
 /* Webcams */
 #webcams h2 { border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
-#webcam-cams { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 1rem; }
+#webcam-cams { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 1rem; }
 .cam { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: .8rem; }
 .cam h3 { margin: 0 0 .5rem; font-size: 1rem; }
 .cam img { width: 100%; border-radius: 6px; background: #000; display: block; min-height: 180px; }
