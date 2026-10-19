@@ -34,9 +34,11 @@ def log_forecasts(*, data_dir: Path | None = None) -> dict:
     data_dir = data_dir or cfg.DATA_DIR
 
     fetched_at = om.utcnow()
-    # The forecast endpoint exposes no per-model init time, so the request time
-    # is our issued_at reference for the whole run (see openmeteo module docstring).
+    # The request time is the issued_at reference for the whole run (see the
+    # openmeteo module docstring); each model's run init is recorded alongside.
     issued_at = fetched_at
+    domains = {m["id"]: m.get("run_meta") for m in models_cfg["models"]}
+    inits_before = om.run_inits(domains)
 
     all_records: list[dict] = []
     per_location: dict[str, int] = {}
@@ -79,11 +81,16 @@ def log_forecasts(*, data_dir: Path | None = None) -> dict:
             errors.pop(loc["id"], None)
         pending = still_failing
 
+    run_init = om.settled_run_inits(inits_before, om.run_inits(domains))
+    for r in all_records:
+        r["run_init"] = run_init.get(r["model"])
+
     from .storage import write_forecast_run
 
     path = write_forecast_run(all_records, data_dir=data_dir, fetched_at=fetched_at)
     return {
         "fetched_at": om._iso(fetched_at),
+        "run_init": run_init,
         "n_records": len(all_records),
         "per_location": per_location,
         "failed_locations": errors,

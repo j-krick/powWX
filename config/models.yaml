@@ -26,32 +26,43 @@ variables:
   - freezing_level_height   # only GFS + ICON populate this on Open-Meteo; the
                             # GEM/ECMWF models return null and are dropped on parse.
 
+# run_meta: the Open-Meteo data domain whose meta.json names the model's newest
+# run; the loggers store it as run_init. Checked 2026-10-19 against the Single
+# Runs API: the run each names is the one the forecast API serves. (GEM global
+# and regional moved to the 15 km / 10 km domains; cmc_gem_gdps/rdps are frozen.)
 models:
   - id: gem_hrdps_continental
+    run_meta: cmc_gem_hrdps
     label: GEM HRDPS
     resolution_km: 2.5
     horizon_days: 2
   - id: gem_regional
+    run_meta: cmc_gem_rdps_10km
     label: GEM RDPS
     resolution_km: 10
     horizon_days: 3.5
   - id: gem_global
+    run_meta: cmc_gem_gdps_15km
     label: GEM GDPS
     resolution_km: 15
     horizon_days: 10
   - id: ecmwf_ifs025
+    run_meta: ecmwf_ifs025
     label: ECMWF IFS
     resolution_km: 9
     horizon_days: 10
   - id: ecmwf_aifs025_single
+    run_meta: ecmwf_aifs025_single
     label: ECMWF AIFS
     resolution_km: 28
     horizon_days: 10
   - id: gfs_seamless
+    run_meta: ncep_gfs013
     label: GFS (Seamless)
     resolution_km: 11
     horizon_days: 16
   - id: icon_global
+    run_meta: dwd_icon
     label: ICON Global
     resolution_km: 11
     horizon_days: 7.5
@@ -70,6 +81,7 @@ ensembles:
     - snowfall
   models:
     - id: gem_global_ensemble
+      run_meta: cmc_gem_geps
       label: GEPS (GEM ensemble)
       members: 21
 

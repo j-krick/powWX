@@ -26,7 +26,9 @@ def log_ensembles(*, data_dir: Path | None = None) -> dict:
                 "failed": {}, "path": None}
 
     fetched_at = om.utcnow()
-    issued_at = fetched_at  # no run time exposed, as for the deterministic log
+    issued_at = fetched_at  # request time, as for the deterministic log
+    domains = {m["id"]: m.get("run_meta") for m in ens["models"]}
+    inits_before = om.run_inits(domains)
 
     all_records: list[dict] = []
     per_location: dict[str, int] = {}
@@ -58,12 +60,17 @@ def log_ensembles(*, data_dir: Path | None = None) -> dict:
             all_records.extend(recs)
             per_location[key] = len(recs)
 
+    run_init = om.settled_run_inits(inits_before, om.run_inits(domains))
+    for r in all_records:   # member ids are <model id>_memberNN
+        r["run_init"] = run_init.get(r["model"].rsplit("_member", 1)[0])
+
     from .storage import write_forecast_run
 
     path = write_forecast_run(all_records, data_dir=data_dir, fetched_at=fetched_at,
                               tag="ens", subdir="ensembles")
     return {
         "fetched_at": om._iso(fetched_at),
+        "run_init": run_init,
         "n_records": len(all_records),
         "per_location": per_location,
         "failed": errors,

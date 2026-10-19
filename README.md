@@ -177,15 +177,18 @@ Every record is keyed on **`(location, model, issued_at, valid_time, variable, v
 plus `source` and `fetched_at` provenance.
 
 - `valid_time` — the time the value forecasts for.
-- `issued_at` — for the **live** logger this is the request time (`fetched_at`):
-  Open-Meteo's forecast endpoint does not expose per-model run/init times, so the
-  request time is the honest reference, and lead time = `valid_time − issued_at`.
+- `issued_at` — for the **live** logger this is the request time (`fetched_at`),
+  and lead time = `valid_time − issued_at`: how far ahead the forecast was when
+  someone could read it.
   For **backfill** rows (`source = previous_runs`) `issued_at` is
   `valid_time − N days` for the `_previous_dayN` offset. The value itself comes
   from the newest run *initialised* at least N days before `valid_time`, so its
   true lead is 24N to 24N+5 h (checked against the Single Runs API, 2026-10-19,
   GFS and ICON alike). Live runs are 5–12 h old when fetched, so a live "day N"
   is a somewhat longer true lead than a backfill "day N".
+- `run_init` — live rows since 2026-10-20: the model run's initialisation time,
+  from Open-Meteo's `meta.json` for the domain in `config/models.yaml`
+  (`run_meta`). Null when it couldn't be read or a new run landed mid-fetch.
 - **Never overwrite.** Each run writes a new file. Keeping the same `valid_time`
   across many `issued_at` (the 3-days-out vs 1-day-out forecast) is the entire
   basis of verification.

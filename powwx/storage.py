@@ -28,6 +28,7 @@ FORECAST_COLUMNS = [
     "value",
     "source",
     "fetched_at",
+    "run_init",   # live rows: the model run's initialisation time (null if unknown)
 ]
 
 

@@ -23,9 +23,9 @@ def _fake_parse(raw, *, location_id, **_):
     return [{"location": location_id, "model": "gem_global", "value": raw["v"]}]
 
 
-def _run(tmp_path, fetch):
+def _run(tmp_path, fetch, models_cfg=MODELS_CFG):
     with mock.patch.object(fl.cfg, "load_locations", return_value=LOCATIONS), \
-         mock.patch.object(fl.cfg, "load_models", return_value=MODELS_CFG), \
+         mock.patch.object(fl.cfg, "load_models", return_value=models_cfg), \
          mock.patch.object(fl.cfg, "model_ids", return_value=["gem_global"]), \
          mock.patch.object(fl.om, "fetch_forecast", side_effect=fetch) as f, \
          mock.patch.object(fl.om, "parse_long", side_effect=_fake_parse), \
@@ -82,3 +82,34 @@ def test_missing_models_are_reported_per_location():
     out = fl.missing_models(recs, ["gem_global", "icon_global"], ["pow_o_meter", "station_58"])
     assert out == {"station_58": ["icon_global"]}
     assert fl.missing_models([], ["gem_global"], ["pow_o_meter"]) == {"pow_o_meter": ["gem_global"]}
+
+
+def test_run_init_kept_only_when_unchanged_during_the_fetch():
+    from datetime import datetime, timezone
+    t0 = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+    t1 = datetime(2026, 10, 19, 18, tzinfo=timezone.utc)
+    before = {"gfs_seamless": t0, "icon_global": t0, "gem_global": None}
+    after = {"gfs_seamless": t0, "icon_global": t1, "gem_global": None}
+    assert fl.om.settled_run_inits(before, after) == {
+        "gfs_seamless": "2026-10-19T12:00:00Z",   # same run throughout
+        "icon_global": None,                       # a new run landed mid-fetch
+        "gem_global": None}                        # meta.json unreadable
+
+
+def test_run_inits_reads_each_domain_once_and_skips_models_without_one():
+    with mock.patch.object(fl.om, "fetch_run_init", return_value="T") as f:
+        out = fl.om.run_inits({"a": "dom1", "b": "dom1", "c": None})
+    assert out == {"a": "T", "b": "T"}
+    f.assert_called_once_with("dom1")
+
+
+def test_logger_stores_run_init_on_every_row(tmp_path):
+    from datetime import datetime, timezone
+    cfg = {**MODELS_CFG, "models": [{"id": "gem_global", "run_meta": "cmc_gem_gdps_15km"}]}
+    t0 = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+    with mock.patch.object(fl.om, "fetch_run_init", return_value=t0):
+        summary, _, _ = _run(tmp_path, lambda **kw: {"v": 3.0}, models_cfg=cfg)
+    import pandas as pd
+    df = pd.read_parquet(summary["path"])
+    assert summary["run_init"] == {"gem_global": "2026-10-19T12:00:00Z"}
+    assert (df["run_init"] == "2026-10-19T12:00:00Z").all()

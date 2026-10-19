@@ -6,12 +6,13 @@ One request per location pulls every model at once via the comma-separated
 into the append-only long schema keyed on
 ``(location, model, issued_at, valid_time, variable, value)``.
 
-NOTE on ``issued_at``: the Open-Meteo *forecast* endpoint does not expose each
-model's run/initialisation time, so the live logger records ``fetched_at`` (the
-moment of the request, UTC) as ``issued_at``. That is the honest best-available
-reference; lead time is then ``valid_time - issued_at``. The Previous Runs API
-(see :mod:`powwx.previous_runs`) gives exact integer-day lead offsets instead and
-is the basis for backfilled verification.
+NOTE on ``issued_at``: the live logger records ``fetched_at`` (the moment of the
+request, UTC) as ``issued_at``, so lead time is ``valid_time - issued_at``: how far
+ahead the forecast was when someone could read it. The forecast response itself
+carries no run time, so the logger also reads each model's newest run from
+Open-Meteo's per-domain ``meta.json`` (:func:`run_inits`) and stores it as
+``run_init``. The Previous Runs API (see :mod:`powwx.previous_runs`) gives
+near-integer-day leads instead and is the basis for backfilled verification.
 """
 
 from __future__ import annotations
@@ -202,6 +203,39 @@ def parse_ensemble_long(
                 }
             )
     return records
+
+
+META_URL = "https://api.open-meteo.com/data/{domain}/static/meta.json"
+
+
+def fetch_run_init(domain: str, *, max_retries: int = 2) -> datetime | None:
+    """Initialisation time (UTC) of the newest run Open-Meteo serves for a data
+    domain, from its ``meta.json``; ``None`` if it can't be read."""
+    try:
+        meta = get_with_retry(META_URL.format(domain=domain), {}, timeout=30,
+                              max_retries=max_retries)
+        return datetime.fromtimestamp(int(meta["last_run_initialisation_time"]), timezone.utc)
+    except Exception:  # noqa: BLE001 - a run time is a bonus, never worth a lost run
+        return None
+
+
+def run_inits(domains: dict[str, str | None]) -> dict[str, datetime | None]:
+    """``{model_id: newest run init}`` for each model with a ``run_meta`` domain."""
+    cache: dict[str, datetime | None] = {}
+    out = {}
+    for model, domain in domains.items():
+        if domain:
+            if domain not in cache:
+                cache[domain] = fetch_run_init(domain)
+            out[model] = cache[domain]
+    return out
+
+
+def settled_run_inits(before: dict, after: dict) -> dict[str, str | None]:
+    """Run init per model as ISO text, only where it was the same before and after
+    the data requests: if a new run landed in between, the data could be either."""
+    return {m: (_iso(t) if t is not None and after.get(m) == t else None)
+            for m, t in before.items()}
 
 
 def _iso(dt: datetime) -> str:
