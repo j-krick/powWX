@@ -150,12 +150,15 @@ table.milestones td:first-child, table.milestones th:first-child { text-align: l
 .cam { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: .8rem; }
 .cam h3 { margin: 0 0 .5rem; font-size: 1rem; }
 .cam img { width: 100%; border-radius: 6px; background: #000; display: block; min-height: 180px; }
-.cam-controls { display: flex; align-items: center; gap: .5rem; margin-top: .55rem; flex-wrap: wrap; }
-.cam-controls button { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: .35rem .7rem; cursor: pointer; }
+.cam-note { margin: 0 0 .4rem; }
+.cam-controls { display: flex; align-items: center; gap: .6rem; margin-top: .4rem; }
+.cam-controls button { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: .35rem .7rem; cursor: pointer; white-space: nowrap; }
 .cam-controls button:disabled { opacity: .4; cursor: default; }
-.cam-controls input[type=range] { flex: 1; min-width: 100px; }
+.cam-controls input[type=range] { flex: 1; min-width: 0; }
+/* one image back / forward: big enough to tap */
+.cam-controls .steps { display: inline-flex; gap: .3rem; }
+.cam-controls .step { padding: .05rem .7rem; font-size: 1.4rem; line-height: 1.2; }
 .cam-caption { color: var(--ink-dim); font-size: .8rem; margin-top: .4rem; min-height: 1.1em; }
-.cam-live { color: var(--accent); }
 
 footer { padding: 1.25rem; border-top: 1px solid var(--line); color: var(--ink-dim); font-size: .82rem; max-width: 1280px; margin: 0 auto; }
 footer a { color: var(--accent); }

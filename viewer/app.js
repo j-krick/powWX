@@ -1584,6 +1584,11 @@ function lazyHistory() {
 
 // ---- webcams -------------------------------------------------------------
 
+const CAM_PLAY_DAYS = 3;   // the play button runs through this many recent days
+const CAM_OFF_H = 24;      // no new frame for longer than this: "the camera may be off"
+
+// One slider per camera, oldest on the left; its last step is the camera's
+// newest image, loaded straight from Shames (as on powOmeter).
 function buildWebcams(webcams) {
   const root = document.getElementById("webcam-cams");
   root.innerHTML = "";
@@ -1591,56 +1596,78 @@ function buildWebcams(webcams) {
   const cams = webcams.cameras || {};
   for (const camId of Object.keys(cams)) {
     const cam = cams[camId];
-    const frames = cam.frames || [];
+    const archived = base ? [...(cam.frames || [])].reverse() : [];   // index is newest-first
+    const frames = archived.map((f) => ({ src: `${base}/${f.key}`, time: f.time }))
+      .concat([{ src: `${cam.live_url}?t=${Date.now()}`, time: null }]);
+    const last = frames.length - 1;
     const el = document.createElement("div");
     el.className = "cam";
     el.innerHTML = `<h3>${cam.label}</h3>`;
+    const newest = archived.length ? archived[archived.length - 1].time : null;
+    if (newest && Date.now() - new Date(newest).getTime() > CAM_OFF_H * 3600e3) {
+      const off = document.createElement("p");
+      off.className = "note cam-note";
+      off.textContent = `No new image since ${fmtLocal(newest)}: the camera may be off.`;
+      el.appendChild(off);
+    }
     const img = document.createElement("img");
-    img.alt = cam.label;
-    el.appendChild(img);
-
-    const controls = document.createElement("div");
-    controls.className = "cam-controls";
-    const older = document.createElement("button"); older.textContent = "◀ older";
-    const newer = document.createElement("button"); newer.textContent = "newer ▶";
-    const live = document.createElement("button"); live.textContent = "⟳ Live"; live.className = "cam-live";
-    const slider = document.createElement("input");
-    slider.type = "range"; slider.min = "0"; slider.max = String(Math.max(0, frames.length - 1)); slider.value = "0";
-    controls.append(older, newer, slider, live);
-    el.appendChild(controls);
+    img.alt = `${cam.label} webcam`;
     const caption = document.createElement("div");
     caption.className = "cam-caption";
-    el.appendChild(caption);
+    el.append(img, caption);
 
-    const hasHistory = frames.length > 0 && base;
-    // `frames` is newest-first (idx 0 = newest). The slider runs oldest→newest
-    // left→right (the intuitive timeline), so slider position = reversed idx.
-    let idx = 0; // 0 = newest captured frame
+    const button = (text, label, cls) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = text;
+      if (label) b.setAttribute("aria-label", `${cam.label}: ${label}`);
+      if (cls) b.className = cls;
+      return b;
+    };
+    const playLabel = `▶ Last ${CAM_PLAY_DAYS} days`;
+    const play = button(playLabel);
+    const prev = button("‹", "earlier image", "step");
+    const next = button("›", "later image", "step");
+    const slider = document.createElement("input");
+    slider.type = "range"; slider.min = "0"; slider.max = String(last);
+    slider.setAttribute("aria-label", `${cam.label}: go back in time`);
+    const steps = document.createElement("span");
+    steps.className = "steps";
+    steps.append(prev, next);
 
-    function showFrame() {
-      const f = frames[idx];
-      const n = frames.length;
-      img.src = `${base}/${f.key}`;
-      caption.textContent = `${fmtLocal(f.time)}  ·  ${n - idx} of ${n} (drag right → newer)`;
-      slider.value = String((n - 1) - idx);
-      older.disabled = idx >= n - 1;
-      newer.disabled = idx <= 0;
+    // The play button starts at the first frame of the last few days.
+    const cutoff = Date.now() - CAM_PLAY_DAYS * 86400e3;
+    const playFrom = frames.findIndex((f) => f.time && new Date(f.time).getTime() >= cutoff);
+    let i = last, timer = null;
+    const show = () => {
+      const f = frames[i];
+      img.src = f.src;
+      caption.textContent = f.time === null ? "Newest image (its time is printed on it)"
+        : `${fmtLocal(f.time)}  ·  ${i + 1} of ${last}`;
+      slider.value = String(i);
+      prev.disabled = i === 0;
+      next.disabled = i === last;
+    };
+    const stop = () => { clearInterval(timer); timer = null; play.textContent = playLabel; };
+    slider.oninput = () => { if (timer) stop(); i = Number(slider.value); show(); };
+    for (const [b, d] of [[prev, -1], [next, 1]]) {
+      b.onclick = () => { if (timer) stop(); i = Math.min(last, Math.max(0, i + d)); show(); };
     }
-    function showLive() {
-      img.src = `${cam.live_url}?t=${Date.now()}`;
-      caption.innerHTML = `<span class="cam-live">● Live</span>`;
-    }
+    play.onclick = () => {
+      if (timer) { stop(); return; }
+      frames.slice(playFrom).forEach((f) => { new Image().src = f.src; });   // preload
+      i = playFrom; show();
+      play.textContent = "❚❚ Pause";
+      timer = setInterval(() => { if (++i >= last) { i = last; show(); stop(); } else show(); }, 400);
+    };
+    show();
 
-    if (hasHistory) {
-      older.onclick = () => { if (idx < frames.length - 1) { idx++; showFrame(); } };
-      newer.onclick = () => { if (idx > 0) { idx--; showFrame(); } };
-      slider.oninput = () => { idx = (frames.length - 1) - Number(slider.value); showFrame(); };
-      live.onclick = showLive;
-      showFrame();
+    if (frames.length > 1) {
+      const controls = document.createElement("div");
+      controls.className = "cam-controls";
+      if (playFrom >= 0 && last - playFrom > 1) controls.appendChild(play);
+      controls.append(slider, steps);
+      el.appendChild(controls);
     } else {
-      older.disabled = newer.disabled = slider.disabled = true;
-      live.onclick = showLive;
-      showLive();
       const note = document.createElement("div");
       note.className = "note";
       note.textContent = "Frame history appears here once the webcam archive is public.";
