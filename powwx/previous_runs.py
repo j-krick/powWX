@@ -2,8 +2,10 @@
 
 The Previous Runs endpoint (a *separate* host) serves, for each valid time, the
 value that was predicted N days earlier via the ``_previous_dayN`` suffix
-(N = 1..7). That gives exact integer-day lead offsets — the cleanest possible
-verification substrate — without waiting months for the live logger to fill in.
+(N = 1..7): the newest run initialised at least N days before the valid time,
+so the true lead is 24N to 24N+5 h (checked against the Single Runs API on
+2026-10-19). That gives near-integer-day leads without waiting months for the
+live logger to fill in.
 
 Coverage (per Open-Meteo docs): GFS 2m-temperature back to Mar 2021; all other
 models back to ~Jan 2024. Short-range models (HRDPS/RDPS) only populate the

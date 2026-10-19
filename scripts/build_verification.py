@@ -377,8 +377,8 @@ def build() -> tuple[dict, dict, dict]:
         "locations": result_locs,
         "notes": (
             "Error = forecast − observed. MAE/bias/RMSE in the variable's units. "
-            "Lead day = forecast valid time minus issue time, rounded to whole days "
-            "(backfill rows are exact integer-day offsets); hours already past when a "
+            "Lead day = forecast valid time minus issue time, rounded to whole days; "
+            "hours already past when a "
             "live run was fetched are excluded, so day 0 is same-day forecasts only. "
             "Cells with < "
             f"{MIN_N} matched pairs are dropped. Models are ranked per lead day, never "
@@ -387,9 +387,11 @@ def build() -> tuple[dict, dict, dict]:
             f"accurate only if it leads by more than {ver.TIE_SE:g} standard errors, "
             "otherwise it's a tie. The powWX blend is a bias-corrected, "
             "inverse-MAE-weighted consensus, validated walk-forward (out-of-sample). "
-            "Scores before 2026-05-29 come from Open-Meteo's archive of past runs; for "
-            "GFS (Seamless) that archive may combine GFS differently from the live "
-            "forecast, so read GFS results with caution."
+            "Scores before 2026-05-29 come from Open-Meteo's archive of past runs, "
+            "where day N is the newest run started at least N days before the hour "
+            "(24-29 h ahead for day 1). Live forecasts are already 5-12 h old when "
+            "fetched (runs take hours to publish), so archive-era scores at a given "
+            "lead day are slightly flattering, for every model alike."
         ),
         "attribution": "Forecasts by Open-Meteo.com (CC BY 4.0). Actuals: POW-O-METER data, "
                        "Mount Remo Backcountry Society, CC BY 4.0 (top) and BC Ministry of "
