@@ -199,3 +199,24 @@ def test_duplicate_observation_hours_keep_the_latest_fetch():
         {"time": "2025-01-02T00:00:00Z", "value": 3.0},    # later fetch, revised
     ])
     assert obs["observed"].tolist() == [3.0, 5.0]
+
+
+def test_day_ahead_takes_newest_run_at_least_24h_old_with_all_its_models():
+    # The viewer's past overlay: per valid hour, one run (the newest fetched >= 24 h
+    # before), every model from it; later runs and backfill rows are ignored.
+    rows = [
+        _fc("m1", "2025-01-01T00:00:00Z", "2025-01-02T06:00:00Z", 1.0, "live"),  # 30 h, older run
+        _fc("m1", "2025-01-01T06:00:00Z", "2025-01-02T06:00:00Z", 2.0, "live"),  # 24 h -> chosen
+        _fc("m2", "2025-01-01T06:00:00Z", "2025-01-02T06:00:00Z", 3.0, "live"),  # same run -> chosen
+        _fc("m2", "2025-01-01T00:00:00Z", "2025-01-02T06:00:00Z", 9.0, "live"),  # older run
+        _fc("m1", "2025-01-01T12:00:00Z", "2025-01-02T06:00:00Z", 7.0, "live"),  # only 18 h ahead
+        _fc("m1", "2025-01-01T07:00:00Z", "2025-01-02T06:00:00Z", 8.0),          # backfill row
+        _fc("m1", "2025-01-01T06:00:00Z", "2025-01-03T06:00:00Z", 5.0, "live"),  # after the window
+    ]
+    fc = pd.DataFrame(rows)
+    fc["issued_at"] = pd.to_datetime(fc["issued_at"], utc=True)
+    fc["valid_time"] = pd.to_datetime(fc["valid_time"], utc=True)
+    out = ver.day_ahead_forecast(fc, start=pd.Timestamp("2025-01-02T00:00Z"),
+                                 end=pd.Timestamp("2025-01-02T23:00Z"))
+    assert out[["model", "value"]].values.tolist() == [["m1", 2.0], ["m2", 3.0]]
+    assert out["lead_day"].tolist() == [1, 1]

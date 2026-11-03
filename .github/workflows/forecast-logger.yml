@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  actions: write             # to start the page rebuild below
 
 concurrency:
   group: forecast-data       # shared with backfill to avoid push races
@@ -38,6 +39,7 @@ jobs:
         run: python scripts/run_ensemble_logger.py
 
       - name: Commit new forecast data
+        id: commit
         run: |
           git config user.name  "powwx-bot"
           git config user.email "actions@github.com"
@@ -48,4 +50,13 @@ jobs:
           else
             git commit -m "forecast log: $(date -u +%Y-%m-%dT%H:%MZ)"
             git push
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      # Pushes made with GITHUB_TOKEN don't start other workflows, and GitHub
+      # skips many scheduled viewer runs, so ask for the rebuild directly.
+      - name: Rebuild the page with the new run
+        if: steps.commit.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run viewer.yml --ref main

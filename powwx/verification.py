@@ -79,6 +79,35 @@ def load_forecast_log(
     return out
 
 
+# The viewer's past overlay: how many days back, and how far ahead the forecast was made.
+PAST_DAYS = 5
+PAST_LEAD_HOURS = 24
+
+
+def day_ahead_forecast(
+    fc: pd.DataFrame, *, start: pd.Timestamp, end: pd.Timestamp,
+    lead_hours: int = PAST_LEAD_HOURS,
+) -> pd.DataFrame:
+    """The forecast you could have seen a day before each hour, for the past.
+
+    For every valid hour in ``[start, end]`` take the newest live snapshot fetched
+    at least ``lead_hours`` before it, and all models from that one snapshot (so a
+    blend combines members of the same run). ``fc`` is :func:`load_forecast_log`
+    output; ``issued_at`` is the fetch time, so the model run itself is a few hours
+    older still. Returns ``fc``'s rows that were chosen, plus ``lead_day``.
+    """
+    live = fc[(fc["source"] == "live")
+              & (fc["valid_time"] >= start) & (fc["valid_time"] <= end)]
+    live = live[live["valid_time"] - live["issued_at"] >= pd.Timedelta(hours=lead_hours)]
+    if live.empty:
+        return live.assign(lead_day=pd.Series(dtype=int))
+    newest = live.groupby("valid_time")["issued_at"].transform("max")
+    out = live[live["issued_at"] == newest].copy()
+    lead = (out["valid_time"] - out["issued_at"]).dt.total_seconds() / 86400.0
+    out["lead_day"] = lead.round().astype(int)
+    return out.sort_values(["model", "valid_time"]).reset_index(drop=True)
+
+
 def _empty_aligned_inputs() -> pd.DataFrame:
     return pd.DataFrame(
         columns=["model", "issued_at", "valid_time", "value", "source"]

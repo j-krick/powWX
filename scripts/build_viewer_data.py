@@ -30,6 +30,7 @@ _netcompat.enable()
 
 from powwx import config as cfg  # noqa: E402
 from powwx import observations as obs  # noqa: E402
+from powwx import verification as ver  # noqa: E402
 
 FORECAST_DAYS = 7
 PAST_HOURS = 12
@@ -128,6 +129,24 @@ def build_forecast(models_cfg: dict, locations: list[dict]) -> dict:
             per_var[variable] = {"times": time_strs, "series": series}
         forecast[lid] = per_var
 
+    try:
+        past = build_past_forecast(models_cfg, locations, now)
+    except Exception as exc:  # noqa: BLE001 - the past overlay is optional
+        print(f"::warning title=past forecast::skipped ({exc})")
+        past = {}
+    for lid, per_var in past.items():
+        for variable, node in per_var.items():
+            live_node = forecast.get(lid, {}).get(variable)
+            if not live_node or not live_node["times"]:
+                continue
+            # The current run takes over where its own series starts.
+            keep = [i for i, t in enumerate(node["times"]) if t < live_node["times"][0]]
+            if keep:
+                live_node["past"] = {
+                    "times": [node["times"][i] for i in keep],
+                    "series": {m: [v[i] for i in keep] for m, v in node["series"].items()},
+                }
+
     issued = df["issued_at"].iloc[0] if not df.empty else None
     return {
         "issued_at": _iso_z(issued) if issued else None,
@@ -138,7 +157,54 @@ def build_forecast(models_cfg: dict, locations: list[dict]) -> dict:
             for loc in locations
         },
         "forecast": forecast,
+        "past": {"days": ver.PAST_DAYS, "lead_hours": ver.PAST_LEAD_HOURS},
     }
+
+
+def build_past_forecast(models_cfg: dict, locations: list[dict], now: datetime) -> dict:
+    """Day-ahead forecasts for the past few days, per location/variable:
+    ``{times, series}`` like the live block. Each hour comes from the newest live
+    snapshot fetched at least PAST_LEAD_HOURS before it (see
+    ``verification.day_ahead_forecast``). Best-effort: an empty dict on failure."""
+    import pandas as pd
+
+    PAST_FORECAST_DAYS, PAST_LEAD_HOURS = ver.PAST_DAYS, ver.PAST_LEAD_HOURS
+    start = pd.Timestamp(now - timedelta(days=PAST_FORECAST_DAYS)).floor("h")
+    end = pd.Timestamp(now)
+    first_day = (start - timedelta(hours=PAST_LEAD_HOURS + 48)).strftime("%Y-%m-%d")
+    files = [f for f in glob.glob(str(cfg.DATA_DIR / "forecasts" / "issued_date=*" / "run_*.parquet"))
+             if Path(f).parent.name.split("=", 1)[1] >= first_day]
+    if not files:
+        return {}
+    cols = ["location", "model", "issued_at", "valid_time", "variable", "value", "source"]
+    df = pd.concat([pd.read_parquet(f, columns=cols) for f in files], ignore_index=True)
+    df["issued_at"] = pd.to_datetime(df["issued_at"], utc=True)
+    df["valid_time"] = pd.to_datetime(df["valid_time"], utc=True)
+    df = df.drop_duplicates(subset=["location", "variable", "model", "issued_at", "valid_time"],
+                            keep="last")
+
+    out: dict = {}
+    for loc in locations:
+        for variable in models_cfg["variables"]:
+            sub = df[(df["location"] == loc["id"]) & (df["variable"] == variable)]
+            picked = ver.day_ahead_forecast(sub.drop(columns=["location", "variable"]),
+                                            start=start, end=end, lead_hours=PAST_LEAD_HOURS)
+            if picked.empty:
+                continue
+            times = sorted(picked["valid_time"].unique())
+            idx = {t: i for i, t in enumerate(times)}
+            series: dict = {}
+            for mid, g in picked.groupby("model"):
+                arr = [None] * len(times)
+                for t, v in zip(g["valid_time"], g["value"]):
+                    if pd.notna(v):
+                        arr[idx[t]] = round(float(v), 2)
+                series[mid] = arr
+            out.setdefault(loc["id"], {})[variable] = {
+                "times": [pd.Timestamp(t).strftime("%Y-%m-%dT%H:%MZ") for t in times],
+                "series": series,
+            }
+    return out
 
 
 def build_observations() -> dict:

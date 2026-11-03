@@ -150,6 +150,30 @@ def _live_blend_series(fc, aligned, band_q) -> dict | None:
     }
 
 
+def _past_blend_series(fc, aligned, band_q) -> dict | None:
+    """Blend of the day-ahead forecasts over the past few days, for the viewer's
+    past overlay. Coefficients are learned as of the start of that window, so every
+    hour is blended only from errors known before it (strictly causal)."""
+    if aligned.empty:
+        return None
+    now = pd.Timestamp(datetime.now(timezone.utc))
+    start = (now - pd.Timedelta(days=ver.PAST_DAYS)).floor("h")
+    picked = ver.day_ahead_forecast(fc, start=start, end=now)
+    coef = bl.learn_coefficients(aligned, asof=start)
+    series = bl.live_blend(picked[["model", "valid_time", "value", "lead_day"]], coef)
+    series = series[series["lead_day"].astype(int).isin(band_q.keys())]
+    if series.empty:
+        return None
+    q = [band_q[int(ld)] for ld in series["lead_day"]]
+    return {
+        "lead_hours": ver.PAST_LEAD_HOURS,
+        "times": [t.strftime("%Y-%m-%dT%H:%MZ") for t in series["valid_time"]],
+        "values": [round(float(v), 2) for v in series["value"]],
+        "lower": [round(float(v + lo), 2) for v, (lo, _) in zip(series["value"], q)],
+        "upper": [round(float(v + hi), 2) for v, (_, hi) in zip(series["value"], q)],
+    }
+
+
 def _freezing_level_block(labels) -> tuple[dict | None, dict | None]:
     """Two-station observed freezing-level estimate: a recent interp-regime series
     (the product) and an interp-regime cross-check of model freezing_level_height
@@ -345,8 +369,11 @@ def build() -> tuple[dict, dict, dict]:
             }
 
             live = _live_blend_series(fc, aligned, band_q)
-            if live is not None:
-                blend_live_locs.setdefault(lid, {})[variable] = live
+            past = _past_blend_series(fc, aligned, band_q)
+            if live is not None or past is not None:
+                node = blend_live_locs.setdefault(lid, {}).setdefault(variable, live or {})
+                if past is not None:
+                    node["past"] = past
 
         if per_var:
             result_locs[lid] = {

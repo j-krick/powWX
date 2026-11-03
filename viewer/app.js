@@ -32,6 +32,114 @@ async function loadJSON(name) {
   return r.json();
 }
 
+// ---- fresh station readings, straight from the sources ------------------
+// The page JSON is rebuilt only a few times a day (GitHub skips many scheduled
+// runs), so on load the browser also asks both stations for their newest hours
+// and appends any that are newer than the build's. Both sources allow
+// cross-site reads. Same mappings as powwx/observations.py.
+const AVCAN_58_URL = "https://weather.prod.avalanche.ca/stations/58/measurements";
+const POWOMETER_RECENT_URL = "https://mount-remo-backcountry-society.github.io/powOmeter/v1/recent.csv";
+const AVCAN_FIELDS = {
+  airTempAvg: ["temperature_2m", 1], hourlyPrecip: ["precipitation", 1],
+  snowHeight: ["snow_depth", 0.01], newSnow: ["snowfall", 1],
+  windSpeedAvg: ["wind_speed_10m", 1], windDirAvg: ["wind_direction_10m", 1],
+};
+const POWOMETER_FIELDS = {
+  "air_temperature|point": ["temperature_2m", 1],
+  "relative_humidity|point": ["relative_humidity_2m", 1],
+  "snow_depth|median": ["snow_depth", 0.01],
+};
+const MAX_INTERP_GAP_MS = 90 * 60000;   // as observations.resample_hourly_long
+
+async function fetchTimeout(url, ms) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  try {
+    const r = await fetch(url, { signal: ctl.signal, cache: "no-store" });
+    if (!r.ok) throw new Error(`${r.status}`);
+    return r;
+  } finally { clearTimeout(t); }
+}
+
+// Station #58: hourly rows on the hour -> {variable: [[iso, value], ...]}.
+async function fetchStation58Fresh() {
+  const from = new Date(Date.now() - 3 * DAY).toISOString().slice(0, 19) + "Z";
+  const r = await fetchTimeout(`${AVCAN_58_URL}?fromDate=${encodeURIComponent(from)}`, 8000);
+  const out = {};
+  for (const row of await r.json()) {
+    if (!row.measurementDateTime) continue;
+    const iso = isoHour(new Date(row.measurementDateTime).getTime());
+    for (const [field, [variable, mult]] of Object.entries(AVCAN_FIELDS)) {
+      if (row[field] === null || row[field] === undefined) continue;
+      let v = Number(row[field]) * mult;
+      if ((variable === "precipitation" || variable === "snowfall") && v < 0) v = 0;
+      (out[variable] = out[variable] || []).push([iso, Math.round(v * 1000) / 1000]);
+    }
+  }
+  return out;
+}
+
+// POW-O-METER: point readings every ~67 min, interpolated onto whole hours the
+// way powOmeter's best_hourly.csv does (a reading on the hour is used as is;
+// never across a gap of more than 90 min). Snow depth from the newest site only.
+async function fetchPowOMeterFresh() {
+  const text = await (await fetchTimeout(POWOMETER_RECENT_URL, 8000)).text();
+  const lines = text.trim().split(/\r?\n/);
+  const col = Object.fromEntries(lines[0].split(",").map((h, i) => [h, i]));
+  const pts = {};
+  for (const line of lines.slice(1)) {
+    const c = line.split(",");
+    if (c[col.station_id] !== "powometer" || c[col.quality] === "suspect") continue;
+    const map = POWOMETER_FIELDS[`${c[col.variable]}|${c[col.statistic]}`];
+    if (!map || c[col.value] === "") continue;
+    (pts[map[0]] = pts[map[0]] || []).push({
+      t: new Date(c[col.time_utc]).getTime(), v: Number(c[col.value]) * map[1], site: c[col.site_id] });
+  }
+  const out = {};
+  for (const [variable, list] of Object.entries(pts)) {
+    let p = list.sort((a, b) => a.t - b.t);
+    if (variable === "snow_depth") p = p.filter((x) => x.site === p[p.length - 1].site);
+    const series = [];
+    for (let i = 0; i < p.length; i++) {
+      if (p[i].t % HOUR === 0) series.push([isoHour(p[i].t), p[i].v]);
+      const next = p[i + 1];
+      if (!next || next.t - p[i].t > MAX_INTERP_GAP_MS) continue;
+      // Whole hours strictly between this reading and the next.
+      for (let h = (Math.floor(p[i].t / HOUR) + 1) * HOUR; h < next.t; h += HOUR) {
+        let v = p[i].v + (next.v - p[i].v) * (h - p[i].t) / (next.t - p[i].t);
+        // powOmeter keeps snow depth in whole cm (here already in m).
+        v = variable === "snow_depth" ? Math.round(v * 100) / 100 : Math.round(v * 1000) / 1000;
+        series.push([isoHour(h), v]);
+      }
+    }
+    out[variable] = series;
+  }
+  return out;
+}
+
+// Append fresh hours newer than the build's last hour, per variable. Returns the
+// number of hours added; a failed source just leaves the built data as it is.
+async function refreshObservations(obs) {
+  const sources = [["station_58", fetchStation58Fresh], ["pow_o_meter", fetchPowOMeterFresh]];
+  const results = await Promise.allSettled(sources.map(([, fn]) => fn()));
+  let added = 0;
+  results.forEach((res, i) => {
+    const loc = sources[i][0];
+    if (res.status !== "fulfilled") { console.warn(`fresh ${loc} obs skipped:`, res.reason); return; }
+    for (const [variable, rows] of Object.entries(res.value)) {
+      obs[loc] = obs[loc] || {};
+      const node = obs[loc][variable] = obs[loc][variable] || { times: [], values: [] };
+      const last = node.times[node.times.length - 1] || "";
+      const seen = new Set();
+      rows.filter(([t]) => t > last).sort((a, b) => (a[0] < b[0] ? -1 : 1)).forEach(([t, v]) => {
+        if (seen.has(t)) return;
+        seen.add(t); node.times.push(t); node.values.push(v); added++;
+      });
+    }
+  });
+  return added;
+}
+
 // ---- shared time-axis range (pan/zoom across all charts) -----------------
 const DAY = 86400000;
 const allCharts = [];
@@ -100,7 +208,7 @@ function buildRangeControls() {
   presets.append(
     mkBtn("Next 3 days", () => applyRange(now - 0.5 * DAY, now + 3 * DAY)),
     mkBtn("Next 7 days", () => applyRange(now - 0.5 * DAY, now + 7 * DAY)),
-    mkBtn("Last 3 days", () => applyRange(now - 3 * DAY, now + 0.5 * DAY)),
+    mkBtn("Last 5 days", () => applyRange(now - 5 * DAY, now + 0.5 * DAY)),
     mkBtn("All", () => applyRange(null, null)),
   );
 
@@ -171,6 +279,13 @@ function aggregate(values, type) {
 
 const COMPASS = { 0: "N", 90: "E", 180: "S", 270: "W", 360: "N" };
 
+// How many leading entries of a past series come before `firstLive` (ISO strings
+// sort as times); null if none, so the caller can skip the overlay.
+function trimPast(times, firstLive) {
+  const n = firstLive ? times.filter((t) => t < firstLive).length : times.length;
+  return n || null;
+}
+
 function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
   const node = fc.forecast[loc][vcfg.key];
   const scatter = !!vcfg.scatter; // wind direction: points, not a wrapping line
@@ -185,9 +300,15 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
   // on different grids, so build one sorted set of all timestamps and align every
   // dataset to it by time. This lets the "index" hover mode line up model vs obs
   // correctly — both sources report on the exact hour, so slots merge cleanly.
+  // Day-ahead forecasts for the past days (dashed), up to where the current run
+  // (or current blend) starts, so each model is one line: dashed, then solid.
+  const past = node.past ? trimPast(node.past.times, node.times[0]) : null;
+  const blendPast = blend && blend.past ? trimPast(blend.past.times, (blend.times || [])[0]) : null;
   const tset = new Set(node.times);
+  if (past) node.past.times.slice(0, past).forEach((t) => tset.add(t));
   if (ov) ov.times.forEach((t) => tset.add(t));
-  if (blend) blend.times.forEach((t) => tset.add(t));
+  if (blend && blend.times) blend.times.forEach((t) => tset.add(t));
+  if (blendPast) blend.past.times.slice(0, blendPast).forEach((t) => tset.add(t));
   if (fle) {
     // Densify the FL grid to every hour across its span, so the hours it skips
     // (inversion / too-uncertain) become nulls and the line breaks there instead
@@ -216,6 +337,18 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
       borderWidth: 1.5, tension: 0.25, spanGaps: false,
       showLine: !scatter, pointRadius: scatter ? 2 : 0,
     }));
+  if (past) {
+    fc.models.filter((m) => node.past.series[m.id]).forEach((m) => {
+      const c = MODEL_COLORS[m.id] || "#888";
+      datasets.push({
+        label: `${m.label} (day-ahead)`, modelId: m.id,
+        data: onGrid(node.past.times.slice(0, past), node.past.series[m.id].slice(0, past)),
+        borderColor: c, backgroundColor: c, borderWidth: 1.2, borderDash: [4, 3],
+        tension: 0.25, spanGaps: false, showLine: !scatter, pointRadius: scatter ? 1.6 : 0,
+        pointStyle: scatter ? "crossRot" : undefined,
+      });
+    });
+  }
   if (ov) {
     datasets.push({
       label: "Observed", modelId: "__observed__",
@@ -227,7 +360,27 @@ function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
   }
   // powWX blend: bias-corrected, skill-weighted consensus. Translucent gold
   // uncertainty band (upper+lower, filled between) under a bold gold line.
-  if (blend) {
+  if (blendPast) {
+    const bp = blend.past, n = blendPast;
+    datasets.push({
+      label: "blend past upper", modelId: "powwx_blend", isBand: true,
+      data: onGrid(bp.times.slice(0, n), bp.upper.slice(0, n)),
+      borderWidth: 0, pointRadius: 0, fill: false, tension: 0.25, spanGaps: false, order: 5,
+    });
+    datasets.push({
+      label: "blend past lower", modelId: "powwx_blend", isBand: true,
+      data: onGrid(bp.times.slice(0, n), bp.lower.slice(0, n)),
+      borderWidth: 0, pointRadius: 0, fill: "-1",
+      backgroundColor: "rgba(255,204,51,0.10)", tension: 0.25, spanGaps: false, order: 5,
+    });
+    datasets.push({
+      label: "powWX blend (day-ahead)", modelId: "powwx_blend",
+      data: onGrid(bp.times.slice(0, n), bp.values.slice(0, n)),
+      borderColor: MODEL_COLORS.powwx_blend, backgroundColor: MODEL_COLORS.powwx_blend,
+      borderWidth: 2.2, borderDash: [5, 3], tension: 0.25, pointRadius: 0, spanGaps: false, order: -2,
+    });
+  }
+  if (blend && blend.times) {
     if (blend.upper && blend.lower) {
       datasets.push({
         label: "blend upper", modelId: "powwx_blend", isBand: true,
@@ -415,6 +568,16 @@ function buildForecast(fc, obs, blend, flEst) {
     if (blendLoc) legend.innerHTML += `<span class="leg blend-leg" data-model="powwx_blend"><i style="background:${MODEL_COLORS.powwx_blend}"></i>powWX blend <em class="tag">experimental</em></span>`;
     if (fle && fc.forecast[loc] && fc.forecast[loc].freezing_level_height) legend.innerHTML += `<span class="leg" data-model="__flest__"><i style="background:#ffffff"></i>Freezing level (obs. est.) <em class="tag">experimental</em></span>`;
     block.appendChild(legend);
+    const hasPast = Object.values(fc.forecast[loc] || {}).some((n) => n.past);
+    if (hasPast) {
+      const pn = document.createElement("div");
+      pn.className = "note past-note";
+      const d = (fc.past && fc.past.days) || 5;
+      pn.innerHTML = `<span class="dash-swatch"></span> Dashed = the forecast as it stood a day ahead, `
+        + `for the past ${d} days, against what the station measured. Each hour comes from the newest run `
+        + `fetched at least 24 h before it, so the line can step where one run hands over to the next.`;
+      block.appendChild(pn);
+    }
 
     const locCharts = [];
     const grid = document.createElement("div");
@@ -1763,6 +1926,8 @@ async function main() {
   try {
     const [fc, obs, webcams, meta] = await Promise.all(
       ["forecast", "observations", "webcams", "meta"].map(loadJSON));
+    // Top up with the stations' newest hours (each source waits at most 8 s).
+    try { await refreshObservations(obs); } catch (e) { console.warn("fresh obs skipped:", e); }
     // Blend and freezing-level estimate are optional — tolerate their absence.
     let blend = null, flEst = null;
     try { blend = await loadJSON("blend"); } catch (e) { console.warn("blend skipped:", e.message); }

@@ -173,3 +173,8 @@ footer .credits { margin: .4rem 0; padding-left: 1.1rem; }
 .legend .leg { cursor: pointer; user-select: none; }
 .legend .leg.off { opacity: .4; text-decoration: line-through; }
 .note { color: var(--ink-dim); font-size: .8rem; }
+
+/* Past day-ahead overlay note, right under the model legend. */
+.legend + .past-note { margin: -.6rem 0 1rem; max-width: 80ch; }
+.dash-swatch { display: inline-block; width: 18px; vertical-align: middle;
+  border-top: 2px dashed var(--ink-dim); margin-right: .2rem; }
