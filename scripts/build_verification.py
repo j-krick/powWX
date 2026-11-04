@@ -30,6 +30,7 @@ _netcompat.enable()
 import pandas as pd  # noqa: E402
 
 from powwx import blend as bl  # noqa: E402
+from powwx import ensemble_verification as ev  # noqa: E402
 from powwx import config as cfg  # noqa: E402
 from powwx import freezing_level as fl  # noqa: E402
 from powwx import obs_logger  # noqa: E402
@@ -171,6 +172,35 @@ def _past_blend_series(fc, aligned, band_q) -> dict | None:
         "values": [round(float(v), 2) for v in series["value"]],
         "lower": [round(float(v + lo), 2) for v, (lo, _) in zip(series["value"], q)],
         "upper": [round(float(v + hi), 2) for v, (_, hi) in zip(series["value"], q)],
+    }
+
+
+def _ensemble_block(lid, variable, obs_df, aligned, blend_pairs, models_cfg, labels) -> dict | None:
+    """GEPS scores per lead day against the same hours' deterministic forecasts
+    (see powwx/ensemble_verification.py). None if there is nothing to score."""
+    ens_cfg = (models_cfg.get("ensembles") or {}).get("models") or []
+    if not ens_cfg or variable not in (models_cfg["ensembles"].get("variables") or []):
+        return None
+    ens = ver.load_forecast_log(cfg.DATA_DIR, variable=variable, location=lid, subdir="ensembles")
+    inst = ev.instance_scores(ens, obs_df)
+    if inst.empty:
+        return None
+    first = inst["issued_at"].min()
+    det = pd.concat([aligned[aligned["source"] == "live"],
+                     blend_pairs[blend_pairs["issued_at"] >= first - ev.SAME_JOB]],
+                    ignore_index=True)
+    rows = ev.scores_by_lead(inst, det, min_n=MIN_N, sibling="gem_global", blend_id=bl.BLEND_ID)
+    if not rows:
+        return None
+    m = ens_cfg[0]
+    return {
+        "model": m["id"], "label": m.get("label", m["id"]), "members": m.get("members"),
+        "sibling": "gem_global", "sibling_label": labels.get("gem_global", "GEM GDPS"),
+        "coverage_level": ev.COVERAGE_LEVEL, "bias_window_days": ev.BIAS_WINDOW_DAYS,
+        "period": {"start": inst["valid_time"].min().strftime("%Y-%m-%dT%H:%MZ"),
+                   "end": inst["valid_time"].max().strftime("%Y-%m-%dT%H:%MZ")},
+        "issue_days": int(inst["issued_at"].dt.floor("D").nunique()),
+        "by_lead": rows,
     }
 
 
@@ -368,6 +398,14 @@ def build() -> tuple[dict, dict, dict]:
                 "blend": blend_summary,
                 "strata": strata,
             }
+            try:
+                ens_block = _ensemble_block(lid, variable, obs_df, aligned, blend_pairs,
+                                            models_cfg, labels)
+            except Exception as exc:  # noqa: BLE001 - the ensemble block is optional
+                print(f"::warning title=ensemble::{lid}/{variable} skipped ({exc})")
+                ens_block = None
+            if ens_block:
+                per_var[variable]["ensemble"] = ens_block
 
             live = _live_blend_series(fc, aligned, band_q)
             past = _past_blend_series(fc, aligned, band_q)

@@ -51,6 +51,7 @@ def load_forecast_log(
     location: str,
     sources: list[str] | None = None,
     cycles: dict[str, int] | None = None,
+    subdir: str = "forecasts",
 ) -> pd.DataFrame:
     """Read the committed forecast log for one ``(location, variable)``.
 
@@ -58,7 +59,7 @@ def load_forecast_log(
     ``issued_at`` / ``valid_time`` as UTC-aware timestamps. ``sources`` optionally
     restricts to e.g. ``["live"]`` or ``["previous_runs"]``; default keeps both.
     """
-    files = sorted(glob.glob(str(data_dir / "forecasts" / "issued_date=*" / "*.parquet")))
+    files = sorted(glob.glob(str(data_dir / subdir / "issued_date=*" / "*.parquet")))
     if not files:
         return _empty_aligned_inputs()
 

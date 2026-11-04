@@ -26,6 +26,69 @@ const CHART_VARS = [
   { key: "relative_humidity_2m", title: "Humidity", agg: "mean" },
 ];
 
+// ---- touch screens: values in a bar at the bottom, not over the chart --------
+// A tooltip drawn on the canvas sits under your finger, covers the lines and
+// stays until you tap elsewhere. On touch screens every chart instead shows its
+// values in a bar fixed to the bottom of the screen, which goes away a few
+// seconds after your finger stops (or when you tap it). Desktop is unchanged.
+const TOUCH = !!(window.matchMedia && matchMedia("(hover: none), (pointer: coarse)").matches);
+const READOUT_MS = 4000;
+let readoutTimer = null;
+let readoutChart = null;
+
+function readoutEl() {
+  let el = document.getElementById("readout");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "readout";
+    el.setAttribute("role", "status");
+    el.onclick = hideReadout;
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function hideReadout() {
+  clearTimeout(readoutTimer);
+  const el = document.getElementById("readout");
+  if (el) el.classList.remove("show");
+  const ch = readoutChart;
+  readoutChart = null;
+  if (ch && ch.tooltip) {
+    ch.setActiveElements([]);
+    ch.tooltip.setActiveElements([], { x: 0, y: 0 });
+    ch.update("none");
+  }
+}
+
+function externalReadout({ chart, tooltip }) {
+  if (tooltip.opacity === 0 || !tooltip.dataPoints || !tooltip.dataPoints.length) {
+    if (readoutChart === chart) readoutChart = null;
+    return;   // the timer (or a tap) hides the bar
+  }
+  if (readoutChart && readoutChart !== chart) {
+    const prev = readoutChart; readoutChart = null;
+    prev.setActiveElements([]); prev.tooltip.setActiveElements([], { x: 0, y: 0 }); prev.update("none");
+  }
+  readoutChart = chart;
+  const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const items = tooltip.body.map((b, i) => {
+    const c = tooltip.labelColors[i] || {};
+    return `<span class="ro-item"><i style="background:${c.borderColor || c.backgroundColor || "#888"}"></i>${esc(b.lines.join(" "))}</span>`;
+  }).join("");
+  const el = readoutEl();
+  el.innerHTML = `<div class="ro-title">${esc((tooltip.title || []).join(" "))}<span class="ro-x" aria-hidden="true">×</span></div>` +
+    `<div class="ro-items">${items}</div>`;
+  el.classList.add("show");
+  clearTimeout(readoutTimer);
+  readoutTimer = setTimeout(hideReadout, READOUT_MS);
+}
+
+if (TOUCH && window.Chart) {
+  Chart.defaults.plugins.tooltip.enabled = false;
+  Chart.defaults.plugins.tooltip.external = externalReadout;
+}
+
 async function loadJSON(name) {
   const r = await fetch(`data/${name}.json`, { cache: "no-store" });
   if (!r.ok) throw new Error(`${name}.json: ${r.status}`);
@@ -997,6 +1060,7 @@ function buildVerification(ver) {
       block.appendChild(grid);
 
       renderStrata(block, lv, ver, unit, legend, stratHolder);
+      if (lv.ensemble) renderEnsemble(block, lv.ensemble, labels, unit);
 
       legend.querySelectorAll(".leg").forEach((span) => {
         span.onclick = () => {
@@ -1014,6 +1078,122 @@ function buildVerification(ver) {
     }
     body.appendChild(block);
   }
+}
+
+// ---- ensemble (GEPS) -------------------------------------------------------
+// Is the GEM ensemble useful here? Its CRPS (in °C; equal to the average error
+// for a single forecast, so it sits on the same axis as the models' MAE), raw
+// and with its bias removed (learned from earlier days only), against the best
+// single model and the powWX blend on the same hours; and how often readings
+// fall inside its 80 % range.
+const ENS_COLOR = "#f032e6";
+const ENS_REF_COLOR = "#c9d4e0";
+
+function leadChart(canvas, xs, datasets, yTitle, fmt) {
+  return new Chart(canvas, {
+    type: "line",
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          titleFont: { size: 11 }, bodyFont: { size: 11 },
+          filter: (i) => i.parsed.y !== null && !i.dataset.isRef,
+          callbacks: {
+            title: (items) => (items[0].parsed.x === 0 ? "Same day" : `Lead day ${items[0].parsed.x}`),
+            label: (c) => `${c.dataset.label}: ${fmt(c.parsed.y)}`,
+          },
+        },
+      },
+      scales: {
+        x: { type: "linear", min: xs[0], max: xs[xs.length - 1],
+             title: { display: true, text: "Lead time (days after the model run started)", color: "#9fb0c3" },
+             ticks: { color: "#9fb0c3", stepSize: 1, precision: 0, maxRotation: 0, autoSkipPadding: 8 },
+             grid: { color: "#243246" } },
+        y: { title: { display: true, text: yTitle, color: "#9fb0c3" },
+             ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },
+      },
+    },
+  });
+}
+
+function renderEnsemble(block, e, labels, unit) {
+  const rows = e.by_lead;
+  const xs = rows.map((r) => r.lead_day);
+  const pts = (key, scale = 1) => rows.map((r) => ({ x: r.lead_day, y: r[key] == null ? null : r[key] * scale }));
+  const line = (label, key, color, opts = {}) => ({
+    label, data: pts(key, opts.scale), borderColor: color, backgroundColor: color,
+    borderWidth: opts.width || 1.8, borderDash: opts.dash, pointRadius: 2.4, tension: 0.2,
+    spanGaps: false, isRef: opts.isRef,
+  });
+
+  const d1 = rows.find((r) => r.lead_day === 1);
+  const pct = (v) => `${Math.round(v * 100)}%`;
+  let verdict = "";
+  if (d1) {
+    verdict = `Raw, it runs <strong>${Math.abs(d1.bias).toFixed(1)} ${unit} too ${d1.bias < 0 ? "cold" : "warm"}</strong> at day 1, ` +
+      `and only <strong>${pct(d1.coverage)}</strong> of readings fall inside its ${pct(e.coverage_level)} range (should be ${pct(e.coverage_level)}).`;
+    if (d1.crps_bc != null && d1.blend_mae_bc != null) {
+      const best = labels[d1.best_model] || d1.best_model;
+      const better = d1.crps_bc < Math.min(d1.blend_mae_bc, d1.best_mae);
+      verdict += ` With that bias removed (learned from earlier days only), its day-1 score is ` +
+        `<strong>${d1.crps_bc.toFixed(2)} ${unit}</strong>, against ${d1.best_mae.toFixed(2)} ${unit} for the best single model (${best}) ` +
+        `and ${d1.blend_mae_bc.toFixed(2)} ${unit} for the powWX blend: <strong>${better ? "better than both" : "not as good yet"}</strong>.`;
+    }
+  }
+  const sect = document.createElement("div");
+  sect.className = "ens-section";
+  sect.innerHTML =
+    `<h3 class="ens-title">🎲 ${e.label}, ${e.members} members <em class="tag">early look</em></h3>` +
+    `<div class="verif-callout"><p>${verdict}</p>` +
+    `<p class="note">Score = CRPS, the ensemble's error in ${unit}. For a single forecast it equals the plain error, ` +
+    `so it compares directly with the models' MAE; lower is better. ${e.issue_days} days of forecasts ` +
+    `(${e.period.start.slice(0, 10)} → ${e.period.end.slice(0, 10)}), so treat the long lead days with care. ` +
+    `The bias-removed lines need some earlier results to learn from, so they cover fewer lead days.</p></div>`;
+
+  const legend = document.createElement("div");
+  legend.className = "legend";
+  const sw = (color, dash) => `<i style="background:${dash ? "transparent" : color};${dash ? `border-top:2px dashed ${color};height:0` : ""}"></i>`;
+  legend.innerHTML =
+    `<span>${sw(ENS_COLOR, true)}${e.label}, raw</span>` +
+    `<span>${sw(ENS_COLOR)}${e.label}, bias removed</span>` +
+    `<span>${sw(ENS_REF_COLOR)}Best single model</span>` +
+    `<span>${sw(MODEL_COLORS.powwx_blend)}powWX blend</span>`;
+  sect.appendChild(legend);
+
+  const grid = document.createElement("div");
+  grid.className = "panel-grid";
+  const mk = (title, u) => {
+    const panel = document.createElement("div");
+    panel.className = "panel";
+    panel.innerHTML = `<h3>${title} <span class="unit">${u}</span></h3>`;
+    const cw = document.createElement("div");
+    cw.className = "chart-wrap";
+    const canvas = document.createElement("canvas");
+    cw.appendChild(canvas); panel.appendChild(cw); grid.appendChild(panel);
+    return canvas;
+  };
+  const c1 = mk("Error by lead day", unit);
+  const c2 = mk(`Readings inside the ${pct(e.coverage_level)} range`, "%");
+  sect.appendChild(grid);
+  block.appendChild(sect);
+
+  const f2 = (v) => `${v.toFixed(2)} ${unit}`;
+  leadChart(c1, xs, [
+    line(`${e.label}, raw`, "crps", ENS_COLOR, { dash: [5, 4] }),
+    line(`${e.label}, bias removed`, "crps_bc", ENS_COLOR, { width: 2.4 }),
+    line("Best single model", "best_mae", ENS_REF_COLOR),
+    line("powWX blend", "blend_mae", MODEL_COLORS.powwx_blend, { width: 2.4 }),
+  ], unit, f2);
+  const target = e.coverage_level * 100;
+  leadChart(c2, xs, [
+    line(`${e.label}, raw`, "coverage", ENS_COLOR, { dash: [5, 4], scale: 100 }),
+    line(`${e.label}, bias removed`, "coverage_bc", ENS_COLOR, { width: 2.4, scale: 100 }),
+    { label: "target", data: [{ x: xs[0], y: target }, { x: xs[xs.length - 1], y: target }],
+      borderColor: "#7d8ea0", borderWidth: 1, borderDash: [6, 4], pointRadius: 0, isRef: true },
+  ], "%", (v) => `${Math.round(v)}%`);
 }
 
 // ---- season in context (history) -------------------------------------------

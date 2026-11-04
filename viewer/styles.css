@@ -178,3 +178,21 @@ footer .credits { margin: .4rem 0; padding-left: 1.1rem; }
 .legend + .past-note { margin: -.6rem 0 1rem; max-width: 80ch; }
 .dash-swatch { display: inline-block; width: 18px; vertical-align: middle;
   border-top: 2px dashed var(--ink-dim); margin-right: .2rem; }
+
+/* GEPS ensemble block inside a verification location. */
+.ens-section { margin-top: 1.5rem; }
+.ens-title { font-size: 1rem; margin: 0 0 .5rem; }
+
+/* Touch screens: chart values in a bar at the bottom (see externalReadout). */
+#readout { position: fixed; left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom));
+  z-index: 50; max-height: 38vh; overflow: auto; padding: .45rem .7rem .55rem;
+  background: rgba(16, 24, 36, .96); border: 1px solid #243246; border-radius: 10px;
+  color: var(--ink, #e6edf3); font-size: .78rem; line-height: 1.35;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
+  transform: translateY(calc(100% + 24px)); transition: transform .18s ease; }
+#readout.show { transform: none; }
+#readout .ro-title { font-weight: 600; margin-bottom: .25rem; display: flex; justify-content: space-between; }
+#readout .ro-x { color: var(--ink-dim); padding-left: 1rem; }
+#readout .ro-items { display: flex; flex-wrap: wrap; gap: .15rem .9rem; }
+#readout .ro-item { display: inline-flex; align-items: center; gap: .35rem; white-space: nowrap; }
+#readout .ro-item i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
