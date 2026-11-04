@@ -680,7 +680,7 @@ function makeMetricChart(canvas, locVar, ver, metric, unit) {
       },
       scales: {
         x: { type: "linear", min: 0, max: maxLead,
-             title: { display: true, text: "Lead time (days ahead; 0 = same day)", color: "#9fb0c3" },
+             title: { display: true, text: "Lead time (days after the model run started; 0 = same day)", color: "#9fb0c3" },
              ticks: { color: "#9fb0c3", stepSize: 1, precision: 0 }, grid: { color: "#243246" } },
         y: { title: { display: true, text: unit, color: "#9fb0c3" },
              ticks: { color: "#9fb0c3" }, grid: { color: "#243246" } },

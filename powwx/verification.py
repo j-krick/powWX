@@ -37,6 +37,12 @@ import pandas as pd
 # 30-minute window matches one obs per forecast hour without double-counting.
 DEFAULT_TOLERANCE = pd.Timedelta(minutes=30)
 
+# Lead time is counted from the model run's start (its initialisation), not from
+# when we fetched it. Where no run start was logged, it is placed from the run
+# cycle (see add_run_init).
+DEFAULT_CYCLE_HOURS = 6
+DEFAULT_RUN_AGE_HOURS = 9   # typical fetch delay after a run starts (logged 2026-10/11)
+
 
 def load_forecast_log(
     data_dir: Path,
@@ -44,6 +50,7 @@ def load_forecast_log(
     variable: str,
     location: str,
     sources: list[str] | None = None,
+    cycles: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """Read the committed forecast log for one ``(location, variable)``.
 
@@ -55,10 +62,13 @@ def load_forecast_log(
     if not files:
         return _empty_aligned_inputs()
 
+    import pyarrow.parquet as pq
+
     frames = []
     cols = ["location", "model", "issued_at", "valid_time", "variable", "value", "source"]
     for f in files:
-        df = pd.read_parquet(f, columns=cols)
+        extra = ["run_init"] if "run_init" in pq.read_schema(f).names else []
+        df = pd.read_parquet(f, columns=cols + extra)
         df = df[(df["location"] == location) & (df["variable"] == variable)]
         if sources is not None:
             df = df[df["source"].isin(sources)]
@@ -76,7 +86,67 @@ def load_forecast_log(
     out = out.drop_duplicates(
         subset=["model", "issued_at", "valid_time"], keep="last"
     ).reset_index(drop=True)
-    return out
+    return add_run_init(out, cycles=cycles if cycles is not None else cycle_hours_by_model())
+
+
+def run_start(df: pd.DataFrame) -> pd.Series:
+    """What lead time counts from: the run start (``init_time``) when the frame
+    has it, else the issue time (synthetic frames, older callers)."""
+    return df["init_time"] if "init_time" in df else df["issued_at"]
+
+
+def cycle_hours_by_model(models_cfg: dict | None = None) -> dict[str, int]:
+    """``{model_id: hours between runs}`` from config/models.yaml (deterministic
+    models and ensembles); models without ``cycle_hours`` run every 6 h."""
+    if models_cfg is None:
+        from . import config as cfg
+        models_cfg = cfg.load_models()
+    models = list(models_cfg.get("models", []))
+    models += (models_cfg.get("ensembles") or {}).get("models", [])
+    return {m["id"]: int(m.get("cycle_hours", DEFAULT_CYCLE_HOURS)) for m in models}
+
+
+def add_run_init(fc: pd.DataFrame, *, cycles: dict[str, int]) -> pd.DataFrame:
+    """Add ``init_time`` (the model run's start) and ``init_basis``:
+
+    - ``logged``: the run start the logger recorded (live rows since 2026-10-19).
+    - ``cycle``: Previous Runs backfill. Day N there is the newest run started at
+      least N days before the valid time, so its start is ``issued_at`` (= valid
+      time − N days) rounded down to the model's run cycle.
+    - ``estimated``: live rows without a recorded start (before 2026-10-19, or a
+      new run landed during the fetch). The fetch time minus that model's median
+      logged delay, rounded to the nearest run.
+
+    Ensemble members (``<id>_memberNN``) use their ensemble's cycle."""
+    out = fc.copy()
+    if out.empty:
+        return out.assign(init_time=pd.Series(dtype="datetime64[ns, UTC]"),
+                          init_basis=pd.Series(dtype=str))
+    logged = (pd.to_datetime(out["run_init"], utc=True) if "run_init" in out
+              else pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns, UTC]"))
+    init = logged.copy()
+    basis = pd.Series("logged", index=out.index, dtype=object)
+    base = out["model"].str.replace(r"_member\d+$", "", regex=True)
+    for model, idx in out.groupby(base).groups.items():
+        cyc = f"{cycles.get(model, DEFAULT_CYCLE_HOURS)}h"
+        rows = out.loc[idx]
+        known = logged.loc[idx].notna()
+        back = (rows["source"] != "live") & ~known
+        init.loc[back[back].index] = rows.loc[back, "issued_at"].dt.floor(cyc)
+        basis.loc[back[back].index] = "cycle"
+        live_missing = (rows["source"] == "live") & ~known
+        if live_missing.any():
+            ages = (rows.loc[known, "issued_at"] - logged.loc[idx][known]).dt.total_seconds()
+            age = pd.Timedelta(seconds=float(ages.median())) if len(ages)                 else pd.Timedelta(hours=DEFAULT_RUN_AGE_HOURS)
+            est = (rows.loc[live_missing, "issued_at"] - age).dt.round(cyc)
+            # A run can't start after we fetched it.
+            fetched = rows.loc[live_missing, "issued_at"]
+            est = est.where(est <= fetched, (fetched).dt.floor(cyc))
+            init.loc[est.index] = est
+            basis.loc[est.index] = "estimated"
+    out["init_time"] = init
+    out["init_basis"] = basis
+    return out.drop(columns=["run_init"], errors="ignore")
 
 
 # The viewer's past overlay: how many days back, and how far ahead the forecast was made.
@@ -103,7 +173,7 @@ def day_ahead_forecast(
         return live.assign(lead_day=pd.Series(dtype=int))
     newest = live.groupby("valid_time")["issued_at"].transform("max")
     out = live[live["issued_at"] == newest].copy()
-    lead = (out["valid_time"] - out["issued_at"]).dt.total_seconds() / 86400.0
+    lead = (out["valid_time"] - run_start(out)).dt.total_seconds() / 86400.0
     out["lead_day"] = lead.round().astype(int)
     return out.sort_values(["model", "valid_time"]).reset_index(drop=True)
 
@@ -168,14 +238,13 @@ def align_to_observations(
 
     merged["error"] = merged["value"] - merged["observed"]
     merged["abs_error"] = merged["error"].abs()
-    lead = merged["valid_time"] - merged["issued_at"]
-    merged["lead_hours"] = lead.dt.total_seconds() / 3600.0
     # Live runs return the whole day from 00:00 UTC, so hours already past at fetch
     # time come back too. Those are hindcast, not forecast: drop them before binning
     # so they can't round into lead day 0 ("same day").
-    merged = merged[merged["lead_hours"] >= 0].copy()
-    # Round to whole days: backfill rows are exact integer-day offsets, and live
-    # rows bin to the nearest day so the two stack on one lead-day axis.
+    merged = merged[merged["valid_time"] >= merged["issued_at"]].copy()
+    # Lead time from the run's start (init_time, see add_run_init) where known,
+    # so live and backfill rows mean the same thing on one lead-day axis.
+    merged["lead_hours"] = (merged["valid_time"] - run_start(merged)).dt.total_seconds() / 3600.0
     merged["lead_day"] = (merged["lead_hours"] / 24.0).round().astype(int)
     return merged.drop(columns=["time"]).reset_index(drop=True)
 

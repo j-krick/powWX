@@ -127,7 +127,7 @@ def _live_blend_series(fc, aligned, band_q) -> dict | None:
         return None
     latest = live["issued_at"].max()
     run = live[live["issued_at"] == latest].copy()
-    lead = (run["valid_time"] - run["issued_at"]).dt.total_seconds() / 86400.0
+    lead = (run["valid_time"] - ver.run_start(run)).dt.total_seconds() / 86400.0
     run["lead_day"] = lead.round().astype(int)
     coef = bl.learn_coefficients(aligned, asof=pd.Timestamp(datetime.now(timezone.utc)))
     series = bl.live_blend(run[["model", "valid_time", "value", "lead_day"]], coef)
@@ -238,7 +238,8 @@ def _fl_crosscheck(interp, labels) -> dict | None:
     if fc.empty:
         return None
     fc = fc.copy()
-    fc["lead_day"] = ((fc["valid_time"] - fc["issued_at"]).dt.total_seconds() / 86400.0).round()
+    fc = fc[fc["valid_time"] >= fc["issued_at"]]
+    fc["lead_day"] = ((fc["valid_time"] - ver.run_start(fc)).dt.total_seconds() / 86400.0).round()
     fc1 = fc[fc["lead_day"] == 1]
     obs_h0 = interp[["time", "h0"]].sort_values("time")
     rows = []
@@ -404,7 +405,9 @@ def build() -> tuple[dict, dict, dict]:
         "locations": result_locs,
         "notes": (
             "Error = forecast − observed. MAE/bias/RMSE in the variable's units. "
-            "Lead day = forecast valid time minus issue time, rounded to whole days; "
+            "Lead day = forecast valid time minus the start of the model run, rounded "
+            "to whole days (the logged run start since 2026-10-19; for the archive, the "
+            "run cycle; otherwise the fetch time minus that model's usual delay); "
             "hours already past when a "
             "live run was fetched are excluded, so day 0 is same-day forecasts only. "
             "Cells with < "
@@ -416,9 +419,9 @@ def build() -> tuple[dict, dict, dict]:
             "inverse-MAE-weighted consensus, validated walk-forward (out-of-sample). "
             "Scores before 2026-05-29 come from Open-Meteo's archive of past runs, "
             "where day N is the newest run started at least N days before the hour "
-            "(24-29 h ahead for day 1). Live forecasts are already 5-12 h old when "
-            "fetched (runs take hours to publish), so archive-era scores at a given "
-            "lead day are slightly flattering, for every model alike."
+            "(24-29 h ahead for day 1). Because lead time counts from the run start, "
+            "archive and live forecasts mean the same thing at a given lead day, even "
+            "though live runs are 5-12 h old by the time they are fetched."
         ),
         "attribution": "Forecasts by Open-Meteo.com (CC BY 4.0). Actuals: POW-O-METER data, "
                        "Mount Remo Backcountry Society, CC BY 4.0 (top) and BC Ministry of "

@@ -30,6 +30,9 @@ variables:
 # run; the loggers store it as run_init. Checked 2026-10-19 against the Single
 # Runs API: the run each names is the one the forecast API serves. (GEM global
 # and regional moved to the 15 km / 10 km domains; cmc_gem_gdps/rdps are frozen.)
+# cycle_hours: hours between runs (default 6). Used to place a forecast's run
+# start when none was logged (verification counts lead time from it). The run
+# hours were checked against the logged run_init values, 2026-10-19..11-04.
 models:
   - id: gem_hrdps_continental
     run_meta: cmc_gem_hrdps
@@ -43,6 +46,7 @@ models:
     horizon_days: 3.5
   - id: gem_global
     run_meta: cmc_gem_gdps_15km
+    cycle_hours: 12
     label: GEM GDPS
     resolution_km: 15
     horizon_days: 10
@@ -82,6 +86,7 @@ ensembles:
   models:
     - id: gem_global_ensemble
       run_meta: cmc_gem_geps
+      cycle_hours: 12
       label: GEPS (GEM ensemble)
       members: 21
 

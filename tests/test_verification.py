@@ -220,3 +220,27 @@ def test_day_ahead_takes_newest_run_at_least_24h_old_with_all_its_models():
                                  end=pd.Timestamp("2025-01-02T23:00Z"))
     assert out[["model", "value"]].values.tolist() == [["m1", 2.0], ["m2", 3.0]]
     assert out["lead_day"].tolist() == [1, 1]
+
+
+def test_run_start_logged_cycle_or_estimated():
+    # Lead time counts from the model run's start: logged when the logger had it,
+    # backfill rounded down to the run cycle, and live rows without one placed at
+    # the fetch time minus the model's median logged delay, on a run hour.
+    rows = [
+        {**_fc("m1", "2026-10-20T15:00:00Z", "2026-10-21T12:00:00Z", 1.0, "live"),
+         "run_init": "2026-10-20T06:00:00Z"},                          # logged, 9 h delay
+        {**_fc("m1", "2026-10-21T15:00:00Z", "2026-10-22T12:00:00Z", 1.0, "live"),
+         "run_init": "2026-10-21T06:00:00Z"},                          # logged, 9 h delay
+        {**_fc("m1", "2026-10-22T16:10:00Z", "2026-10-23T12:00:00Z", 1.0, "live"),
+         "run_init": None},                                            # 16:10 − 9 h -> 06Z
+        {**_fc("g", "2024-01-18T11:00:00Z", "2024-01-19T11:00:00Z", 1.0), "run_init": None},
+        {**_fc("g_member03", "2026-10-22T03:00:00Z", "2026-10-23T00:00:00Z", 1.0, "live"),
+         "run_init": None},                                            # no logged delay -> 9 h default
+    ]
+    fc = pd.DataFrame(rows)
+    fc["issued_at"] = pd.to_datetime(fc["issued_at"], utc=True)
+    fc["valid_time"] = pd.to_datetime(fc["valid_time"], utc=True)
+    out = ver.add_run_init(fc, cycles={"m1": 6, "g": 12})
+    got = list(zip(out["init_time"].dt.strftime("%m-%dT%H"), out["init_basis"]))
+    assert got == [("10-20T06", "logged"), ("10-21T06", "logged"), ("10-22T06", "estimated"),
+                   ("01-18T00", "cycle"), ("10-22T00", "estimated")]
