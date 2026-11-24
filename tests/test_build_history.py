@@ -178,3 +178,14 @@ def test_old_site_snow_seasons_are_shown_but_not_ranked(wired, monkeypatch):
     assert snow["band"] is None and "rank" not in snow["summary"]
     assert max(v for v in snow["current"]["values"] if v is not None) < 10   # new site only
     assert "old site" in snow["note"]
+
+
+def test_top_snow_comes_from_the_log_split_by_site(monkeypatch):
+    log = [{"location": "pow_o_meter", "time": t, "variable": "snow_depth", "value": v, "site": s}
+           for t, v, s in [("2026-01-10T00:00:00Z", 0.5, "shames_top_a"),
+                           ("2026-10-10T00:00:00Z", 0.2, "shames_top_b"),
+                           ("2026-10-11T00:00:00Z", 0.3, "shames_top_b")]]
+    monkeypatch.setattr(bh.obs_logger, "load_observation_log", lambda *a, **k: log)
+    monkeypatch.setattr(bh.obs, "fetch_powometer_v1", lambda: pytest.fail("should use the log"))
+    current, earlier = bh.top_snow_hourly()
+    assert list(current) == [0.2, 0.3] and list(earlier) == [0.5]

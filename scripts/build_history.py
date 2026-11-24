@@ -100,10 +100,16 @@ def _hourly_from_log(lid: str, variable: str) -> pd.Series:
 
 
 def top_snow_hourly() -> tuple[pd.Series, pd.Series]:
-    """POW-O-METER snow depth (m) from powOmeter v1: (current site, earlier sites).
-    The earlier site is ~70 m away and was wind-affected, so its seasons are
-    shown for reference only, never pooled with the current site's."""
-    recs = [r for r in obs.fetch_powometer_v1() if r["variable"] == "snow_depth"]
+    """POW-O-METER snow depth (m): (current site, earlier sites). Read from the
+    observation log (rows carry their powOmeter site), or live from powOmeter v1
+    if the log has none yet. The earlier site is ~70 m away and was wind-affected,
+    so its seasons are shown for reference only, never pooled with the current one."""
+    recs = [{**r, "site_id": r["site"]}
+            for r in obs_logger.load_observation_log(cfg.DATA_DIR, location="pow_o_meter",
+                                                      variable="snow_depth")
+            if r.get("site")]
+    if not recs:
+        recs = [r for r in obs.fetch_powometer_v1() if r["variable"] == "snow_depth"]
     if not recs:
         return pd.Series(dtype=float), pd.Series(dtype=float)
     site = max(recs, key=lambda r: r["time"])["site_id"]

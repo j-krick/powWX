@@ -9,8 +9,10 @@ accrues a verifiable record going forward.
 POW-O-METER (the top station) is logged too, from powOmeter's published v1
 files, so verification never depends on a live third-party fetch. powOmeter
 serves its full history every time, so only hours not already in the log are
-appended. Temperature and humidity only: snow depth must stay split by site
-(see :data:`POWOMETER_LOG_VARIABLES`), which this log's columns don't carry.
+appended. Its rows carry a ``site`` (powOmeter ``site_id``): temperature and
+humidity can be pooled across the station's sites, but snow depth can't (the
+station moved ~70 m on 2026-09-26), so readers of top snow depth filter by site.
+Station #58 rows, and files written before the column existed, have no site.
 
 Layout (committed to git, mirrors the forecast log)::
 
@@ -30,9 +32,9 @@ from . import config as cfg
 from . import observations as obs
 from . import openmeteo as om
 
-OBS_COLUMNS = ["location", "time", "variable", "value", "source", "fetched_at"]
-# POW-O-METER variables that can be pooled across the station's sites.
-POWOMETER_LOG_VARIABLES = {"temperature_2m", "relative_humidity_2m"}
+OBS_COLUMNS = ["location", "time", "variable", "value", "source", "fetched_at", "site"]
+# POW-O-METER variables logged. Snow depth must only be compared within one site.
+POWOMETER_LOG_VARIABLES = {"temperature_2m", "relative_humidity_2m", "snow_depth"}
 
 
 def log_observations(*, data_dir: Path | None = None, days: int = 7) -> dict:
@@ -60,7 +62,7 @@ def log_observations(*, data_dir: Path | None = None, days: int = 7) -> dict:
         seen = _logged_keys(data_dir, location="pow_o_meter")
         recs = [
             {"location": r["location"], "time": r["time"], "variable": r["variable"],
-             "value": r["value"], "source": "powometer_v1"}
+             "value": r["value"], "source": "powometer_v1", "site": r["site_id"]}
             for r in obs.fetch_powometer_v1()
             if r["variable"] in POWOMETER_LOG_VARIABLES and (r["time"], r["variable"]) not in seen
         ]
@@ -115,8 +117,9 @@ def load_observation_log(
     data_dir: Path, *, location: str, variable: str
 ) -> list[dict]:
     """Read the committed observation log for one ``(location, variable)`` as
-    long records ``{location, time, variable, value}``, in fetch order (files
-    are named by fetch time), so downstream dedup can let the latest fetch win."""
+    long records ``{location, time, variable, value, site}``, in fetch order
+    (files are named by fetch time), so downstream dedup can let the latest
+    fetch win. ``site`` is None where the log has none (station #58, old files)."""
     import glob
 
     import pandas as pd
@@ -126,7 +129,11 @@ def load_observation_log(
     )
     records: list[dict] = []
     for f in files:
-        df = pd.read_parquet(f, columns=["location", "time", "variable", "value"])
+        df = pd.read_parquet(f)
         df = df[(df["location"] == location) & (df["variable"] == variable)]
+        if df.empty:
+            continue
+        df = df.reindex(columns=["location", "time", "variable", "value", "site"])
+        df["site"] = df["site"].astype(object).where(df["site"].notna(), None)
         records.extend(df.to_dict("records"))
     return records
