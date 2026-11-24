@@ -33,7 +33,9 @@ from powwx import blend as bl  # noqa: E402
 from powwx import ensemble_verification as ev  # noqa: E402
 from powwx import config as cfg  # noqa: E402
 from powwx import freezing_level as fl  # noqa: E402
+from powwx import history as hist  # noqa: E402
 from powwx import obs_logger  # noqa: E402
+from powwx import snow  # noqa: E402
 from powwx import verification as ver  # noqa: E402
 
 # Variables verified in this cut. Temperature first; extend this list to fan out.
@@ -202,6 +204,64 @@ def _ensemble_block(lid, variable, obs_df, aligned, blend_pairs, models_cfg, lab
         "issue_days": int(inst["issued_at"].dt.floor("D").nunique()),
         "by_lead": rows,
     }
+
+
+def _snow_hourly(lid: str) -> dict[str, pd.Series]:
+    """Measured snow depth (m, hourly, QC'd) per site. POW-O-METER rows carry their
+    site; rows without one (none expected) are left out there, since depth must
+    never be compared across the station's move."""
+    by_site: dict[str, list[dict]] = {}
+    for r in _obs_records(lid, "snow_depth"):
+        site = r.get("site") or (None if lid == "pow_o_meter" else lid)
+        if site:
+            by_site.setdefault(site, []).append(r)
+    return {site: hist.qc_hourly(pd.Series([r["value"] for r in rs],
+                                           index=pd.to_datetime([r["time"] for r in rs], utc=True),
+                                           dtype=float), "snow_depth")
+            for site, rs in by_site.items()}
+
+
+def _snow_block(lid: str) -> tuple[dict | None, dict | None]:
+    """Snowfall vs measured depth change (scores, out-of-sample) and the live
+    snow-depth forecast (see powwx/snow.py). (None, None) if there is nothing yet."""
+    hourly = _snow_hourly(lid)
+    if not hourly:
+        return None, None
+    fc = ver.load_forecast_log(cfg.DATA_DIR, variable="snowfall", location=lid)
+    p = snow.pairs(snow.daily_snowfall(fc), snow.observed_changes(hourly))
+    if p.empty:
+        return None, None
+    oos = snow.walk_forward(p)
+    rows = snow.scores_by_lead(oos, p)
+    band = snow.cumulative_band(oos)
+    r2 = lambda v: None if v is None else round(float(v), 2)  # noqa: E731
+    block = None
+    if rows:
+        act = p[p["active"]]
+        block = {
+            "unit": "cm",
+            "end_hour_utc": snow.END_HOUR_UTC,
+            "n_days": int(act.drop_duplicates(["end", "site"]).shape[0]),
+            "period": {"start": act["end"].min().strftime("%Y-%m-%d"),
+                       "end": act["end"].max().strftime("%Y-%m-%d")},
+            "sites": sorted(p["site"].unique().tolist()),
+            "band_level": snow.BAND_LEVEL,
+            "band_coverage_oos": snow.band_coverage(oos),
+            "band_cm": {str(k): [r2(lo), r2(hi)] for k, (lo, hi) in band.items()},
+            "by_lead": [{"lead_day": r["lead_day"], "n": r["n"], "blend_mae": r2(r["blend_mae"]),
+                         "persistence_mae": r2(r["persistence_mae"]),
+                         "skill_pct": None if r["skill_pct"] is None else round(r["skill_pct"], 1),
+                         "models": {m: {"mae": r2(v["mae"]), "n": v["n"], "r": r2(v["r"])}
+                                    for m, v in r["models"].items()}}
+                        for r in rows],
+        }
+    lead_ok = snow.skilful_leads(rows)
+    if not lead_ok:
+        return block, None
+    current = max(hourly, key=lambda k: hourly[k].index.max())
+    live = snow.live_forecast(fc, hourly[current], snow.fit(p), band,
+                              now=pd.Timestamp(datetime.now(timezone.utc)), max_lead=lead_ok)
+    return block, live
 
 
 def _freezing_level_block(labels) -> tuple[dict | None, dict | None]:
@@ -414,6 +474,14 @@ def build() -> tuple[dict, dict, dict]:
                 if past is not None:
                     node["past"] = past
 
+        try:
+            snow_block, snow_live = _snow_block(lid)
+        except Exception as exc:  # noqa: BLE001 - the snow block is optional
+            print(f"::warning title=snow::{lid} skipped ({exc})")
+            snow_block, snow_live = None, None
+        if snow_live:
+            blend_live_locs.setdefault(lid, {})["snow_depth"] = snow_live
+
         if per_var:
             result_locs[lid] = {
                 "label": loc["name"],
@@ -428,6 +496,8 @@ def build() -> tuple[dict, dict, dict]:
                               else "Avalanche Canada station #58 (logged)",
                 "variables": per_var,
             }
+            if snow_block:
+                result_locs[lid]["snow"] = snow_block
 
     fl_product, fl_crosscheck = _freezing_level_block(labels)
 
@@ -470,7 +540,7 @@ def build() -> tuple[dict, dict, dict]:
     blend_payload = {
         "generated_at": payload["generated_at"],
         "window_days": bl.WINDOW_DAYS,
-        "units": {"temperature_2m": "°C"},
+        "units": {"temperature_2m": "°C", "snow_depth": "m"},
         "note": "powWX blend: per-model bias removed and inverse-MAE weighted, "
                 f"coefficients from the trailing {bl.WINDOW_DAYS} days.",
         "locations": blend_live_locs,

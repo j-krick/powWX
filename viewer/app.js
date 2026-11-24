@@ -349,12 +349,12 @@ function trimPast(times, firstLive) {
   return n || null;
 }
 
-function makeChart(canvas, loc, vcfg, fc, obs, blendLoc, flEst) {
+function makeChart(canvas, loc, vcfg, fc, obs, blendVars, flEst) {
   const node = fc.forecast[loc][vcfg.key];
   const scatter = !!vcfg.scatter; // wind direction: points, not a wrapping line
   const ov = obs[loc] && obs[loc][vcfg.key];
-  // The powWX blend is a temperature-only product (for now).
-  const blend = vcfg.key === "temperature_2m" ? blendLoc : null;
+  // The powWX blend exists for temperature and snow depth.
+  const blend = (blendVars && blendVars[vcfg.key]) || null;
   // Observed freezing-level estimate (from the two stations) overlays the FL panel.
   const fle = (vcfg.key === "freezing_level_height" && flEst && flEst.times
                && flEst.times.length) ? flEst : null;
@@ -613,7 +613,7 @@ function buildForecast(fc, obs, blend, flEst) {
 
   for (const loc of locIds) {
     const meta = fc.locations[loc];
-    const blendLoc = blendLocs[loc] && blendLocs[loc].temperature_2m;
+    const blendLoc = blendLocs[loc] || null;
     const block = document.createElement("div");
     block.className = "loc-block";
     block.innerHTML =
@@ -628,7 +628,7 @@ function buildForecast(fc, obs, blend, flEst) {
     legend.innerHTML = fc.models.map((m) =>
       `<span class="leg" data-model="${m.id}"><i style="background:${MODEL_COLORS[m.id] || "#888"}"></i>${m.label}</span>`).join("");
     if (obs[loc]) legend.innerHTML += `<span class="leg" data-model="__observed__"><i style="background:${OBS_COLOR}"></i>Observed <em class="tag">provisional</em></span>`;
-    if (blendLoc) legend.innerHTML += `<span class="leg blend-leg" data-model="powwx_blend"><i style="background:${MODEL_COLORS.powwx_blend}"></i>powWX blend <em class="tag">experimental</em></span>`;
+    if (blendLoc && Object.keys(blendLoc).length) legend.innerHTML += `<span class="leg blend-leg" data-model="powwx_blend"><i style="background:${MODEL_COLORS.powwx_blend}"></i>powWX blend <em class="tag">experimental</em></span>`;
     if (fle && fc.forecast[loc] && fc.forecast[loc].freezing_level_height) legend.innerHTML += `<span class="leg" data-model="__flest__"><i style="background:#ffffff"></i>Freezing level (obs. est.) <em class="tag">experimental</em></span>`;
     block.appendChild(legend);
     const hasPast = Object.values(fc.forecast[loc] || {}).some((n) => n.past);
@@ -662,6 +662,17 @@ function buildForecast(fc, obs, blend, flEst) {
         cap.innerHTML = "<em class=\"tag\">experimental</em> White = freezing level estimated from the two stations "
           + "(solid where 0 °C is between them, <span style=\"border-bottom:1px dashed #9fb0c3\">dashed</span> where extrapolated above/below). "
           + "Gaps = inversion or too uncertain.";
+        panel.appendChild(cap);
+      }
+      const snowFc = vcfg.key === "snow_depth" && blendLoc && blendLoc.snow_depth;
+      if (snowFc) {
+        const cap = document.createElement("div");
+        cap.className = "note";
+        const last = snowFc.daily[snowFc.daily.length - 1];
+        cap.innerHTML = `<em class="tag">experimental</em> Gold = powWX snow forecast: the latest measured depth ` +
+          `(${Math.round(snowFc.anchor.depth_cm)} cm) plus the models' snowfall, calibrated against past depth changes here, ` +
+          `with its 80 % range (${Math.round(last.lower_cm)}–${Math.round(last.upper_cm)} cm by ${last.end.slice(5, 10)}). ` +
+          "The models' own snow-depth lines describe their whole grid square and are often far off.";
         panel.appendChild(cap);
       }
       grid.appendChild(panel);
@@ -1062,6 +1073,8 @@ function buildVerification(ver) {
       renderStrata(block, lv, ver, unit, legend, stratHolder);
       if (lv.ensemble) renderEnsemble(block, lv.ensemble, labels, unit);
 
+      if (vkey === Object.keys(loc.variables).slice(-1)[0] && loc.snow) renderSnow(block, loc.snow, labels);
+
       legend.querySelectorAll(".leg").forEach((span) => {
         span.onclick = () => {
           const id = span.dataset.model;
@@ -1194,6 +1207,73 @@ function renderEnsemble(block, e, labels, unit) {
     { label: "target", data: [{ x: xs[0], y: target }, { x: xs[xs.length - 1], y: target }],
       borderColor: "#7d8ea0", borderWidth: 1, borderDash: [6, 4], pointRadius: 0, isRef: true },
   ], "%", (v) => `${Math.round(v)}%`);
+}
+
+// ---- snow ------------------------------------------------------------------
+// Snowfall forecasts scored against the measured 24 h change in snow depth
+// (powwx/snow.py). Each model's snowfall is first calibrated to depth change
+// (new snow settles; the pack settles and melts), out-of-sample; the powWX snow
+// blend combines them. "No change" (persistence) is the baseline to beat.
+function renderSnow(block, s, labels) {
+  const rows = s.by_lead;
+  if (!rows.length) return;
+  const xs = rows.map((r) => r.lead_day);
+  const d1 = rows.find((r) => r.lead_day === 1) || rows[0];
+  const useful = rows.filter((r) => r.skill_pct != null && r.skill_pct >= 5).map((r) => r.lead_day);
+  const bestD1 = Object.entries(d1.models).sort((a, b) => a[1].mae - b[1].mae)[0];
+  const cov = s.band_coverage_oos != null ? ` Its ${Math.round(s.band_level * 100)} % range covered ` +
+    `<strong>${Math.round(s.band_coverage_oos * 100)} %</strong> of later outcomes.` : "";
+  const sect = document.createElement("div");
+  sect.className = "ens-section";
+  sect.innerHTML =
+    `<h3 class="ens-title">❄️ New snow: forecast vs measured depth change <em class="tag">early look</em></h3>` +
+    `<div class="verif-callout"><p>A day ahead, the <strong style="color:${MODEL_COLORS.powwx_blend}">powWX snow blend</strong> ` +
+    `misses the 24 h change in depth by <strong>${d1.blend_mae.toFixed(1)} cm</strong> on average, against ` +
+    `${d1.persistence_mae.toFixed(1)} cm for assuming no change (<strong>${d1.skill_pct >= 0 ? d1.skill_pct.toFixed(0) + " % better" : "no better"}</strong>). ` +
+    (bestD1 ? `Best single model: ${labels[bestD1[0]] || bestD1[0]}, ${bestD1[1].mae.toFixed(1)} cm. ` : "") +
+    (useful.length ? `It beats "no change" by 5 % or more up to day ${Math.max(...useful)}.` : "") + cov + `</p>` +
+    `<p class="note">${s.n_days.toLocaleString()} days with snow on the ground or forecast, ${s.period.start} → ${s.period.end}` +
+    `${s.sites.length > 1 ? " (both station sites; changes only within a site)" : ""}. Days run to ${String(s.end_hour_utc - 8).padStart(2, "0")}:00 PST. ` +
+    `All scores are out-of-sample: each month uses only earlier months to calibrate. Few models are archived beyond 2–3 days, so later lead days rest on fewer models.</p></div>`;
+
+  const ids = [...new Set(rows.flatMap((r) => Object.keys(r.models)))];
+  const legend = document.createElement("div");
+  legend.className = "legend";
+  const sw = (color, dash) => `<i style="background:${dash ? "transparent" : color};${dash ? `border-top:2px dashed ${color};height:0` : ""}"></i>`;
+  legend.innerHTML = ids.map((id) => `<span>${sw(MODEL_COLORS[id] || "#888")}${labels[id] || id}</span>`).join("") +
+    `<span>${sw(MODEL_COLORS.powwx_blend)}powWX snow blend</span><span>${sw("#c9d4e0", true)}No change</span>`;
+  sect.appendChild(legend);
+
+  const grid = document.createElement("div");
+  grid.className = "panel-grid";
+  const mk = (title, u) => {
+    const panel = document.createElement("div");
+    panel.className = "panel";
+    panel.innerHTML = `<h3>${title} <span class="unit">${u}</span></h3>`;
+    const cw = document.createElement("div");
+    cw.className = "chart-wrap";
+    const canvas = document.createElement("canvas");
+    cw.appendChild(canvas); panel.appendChild(cw); grid.appendChild(panel);
+    return canvas;
+  };
+  const c1 = mk("Error in 24 h depth change", "cm");
+  const c2 = mk("How well snowfall tracks depth change", "correlation");
+  sect.appendChild(grid);
+  block.appendChild(sect);
+
+  const pts = (f) => rows.map((r) => ({ x: r.lead_day, y: f(r) }));
+  const line = (label, f, color, opts = {}) => ({
+    label, data: pts(f), borderColor: color, backgroundColor: color,
+    borderWidth: opts.width || 1.6, borderDash: opts.dash, pointRadius: 2.4, tension: 0.2, spanGaps: false,
+  });
+  const modelLine = (id, key) => line(labels[id] || id,
+    (r) => (r.models[id] && r.models[id][key] != null ? r.models[id][key] : null), MODEL_COLORS[id] || "#888");
+  leadChart(c1, xs, [
+    ...ids.map((id) => modelLine(id, "mae")),
+    line("powWX snow blend", (r) => r.blend_mae, MODEL_COLORS.powwx_blend, { width: 3 }),
+    line("No change", (r) => r.persistence_mae, "#c9d4e0", { dash: [5, 4] }),
+  ], "cm", (v) => `${v.toFixed(2)} cm`);
+  leadChart(c2, xs, ids.map((id) => modelLine(id, "r")), "r", (v) => v.toFixed(2));
 }
 
 // ---- season in context (history) -------------------------------------------
